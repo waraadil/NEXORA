@@ -42,9 +42,23 @@ await page.fill('input[name="password"]', password);
 await page.click('form:has(input[name="email"]) button[type="submit"]');
 await page.waitForTimeout(3500);
 
+/**
+ * The shell must be interactive before a keyboard shortcut can mean anything.
+ * Against production, a cold lambda can still be streaming the page while the
+ * test presses Ctrl+K; the listener is not attached yet, so the press is lost
+ * and the test reports a broken palette that works perfectly in a browser.
+ * Waiting for the trigger is deterministic: it exists only once the client
+ * component has hydrated.
+ */
+async function readyShell(p) {
+  // Accessible name comes from aria-label, not the visible "Search… ⌘K" text.
+  await p.getByRole('button', { name: 'Open command palette' }).first().waitFor({ state: 'visible', timeout: 30000 });
+  await p.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+}
+
 console.log('\n1. Command palette');
 await page.goto(`${BASE}/dashboard`, { waitUntil: 'networkidle' });
-await page.waitForTimeout(500);
+await readyShell(page);
 check('palette closed initially', (await page.locator('[role="dialog"][aria-label="Command palette"]').count()) === 0);
 
 await page.keyboard.press('Control+k');
@@ -66,6 +80,7 @@ check('Enter navigates to /memory', page.url().endsWith('/memory'), page.url());
 check('palette closed after navigate', (await dialog.count()) === 0);
 
 // Escape closes
+await readyShell(page);
 await page.keyboard.press('Control+k');
 await page.waitForTimeout(300);
 await page.keyboard.press('Escape');
