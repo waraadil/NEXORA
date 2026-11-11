@@ -233,6 +233,32 @@ GitHub: https://github.com/waraadil/NEXORA (4 commits, 122 files, no secrets)
    `redirect_to=https://nexora-zeta-red.vercel.app/auth/...`.
 3. **Rotate the Google API key** used during testing — it is also in the chat log.
 
+### Encryption key must match the data
+
+`NEXORA_ENCRYPTION_KEY` encrypts each user's provider API key (AES-256-GCM,
+`src/lib/crypto.ts`). **It is not a secret you can freely rotate.** Every stored
+credential is encrypted with whatever key was active when it was saved; a
+different key in production means `decryptSecret()` throws on every request and
+`/assistant` dies with *"NEXORA failed to start"*.
+
+Vercel production now uses the same key that encrypted the existing credentials.
+If you ever rotate it, you must re-save every API key through `/settings/ai`
+while the new key is live.
+
+### Live AI path — verified in production
+
+Signed in as the demo user against `https://nexora-zeta-red.vercel.app` and
+generated drafts through the real Gemini API:
+
+| Draft | Angle |
+|---|---|
+| "bet. are you still dragging her along too?" | casual inquiry |
+| "alright. she still coming with you or what?" | direct question |
+| "cool. is she tagging along or are you flying solo?" | sarcastic banter |
+
+Send stays disabled with *"no WhatsApp channel is connected"* — correct, honest
+behaviour rather than a silent no-op.
+
 ### Auth wiring — verified state
 
 | Setting | Value |
