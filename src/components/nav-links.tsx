@@ -42,7 +42,7 @@ export function NavLinks({ variant = 'sidebar' }: { variant?: 'sidebar' | 'botto
               className={[
                 // 44px minimum touch target — the icon alone is only 20px.
                 'flex min-h-11 min-w-11 flex-col items-center justify-center gap-0.5 rounded-lg px-2 py-1 text-[11px] font-medium transition-colors',
-                active ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
+                active ? 'text-primary dark:text-violet-300' : 'text-muted-foreground hover:text-foreground dark:text-white/45 dark:hover:text-white/85',
               ].join(' ')}
             >
               {item.icon}
@@ -64,12 +64,18 @@ export function NavLinks({ variant = 'sidebar' }: { variant?: 'sidebar' | 'botto
             href={item.href}
             aria-current={active ? 'page' : undefined}
             className={[
-              'flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm font-medium transition-colors',
+              'group relative flex items-center gap-2.5 rounded-xl px-2.5 py-2 text-[13.5px] font-medium transition-all',
               active
-                ? 'bg-primary-subtle text-primary'
-                : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+                ? 'bg-gradient-to-r from-violet-500/22 via-fuchsia-500/12 to-transparent text-white shadow-[inset_0_0_0_1px_rgba(192,132,252,0.22)]'
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground dark:text-white/50 dark:hover:bg-white/6 dark:hover:text-white/90',
             ].join(' ')}
           >
+            {active && (
+              <span
+                aria-hidden="true"
+                className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-gradient-to-b from-fuchsia-400 to-violet-500"
+              />
+            )}
             {item.icon}
             {item.label}
           </Link>

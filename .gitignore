@@ -42,3 +42,6 @@ next-env.d.ts
 
 # Proof/QA artifacts — generated locally, not application source
 /screenshots
+
+# Template must be committed; real secrets must not.
+!.env.example

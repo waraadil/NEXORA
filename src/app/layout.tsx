@@ -1,11 +1,19 @@
 import type { Metadata, Viewport } from 'next';
-import { Inter } from 'next/font/google';
+import { Inter, Sora } from 'next/font/google';
 import './globals.css';
 
 const inter = Inter({
   subsets: ['latin'],
   variable: '--font-inter',
   display: 'swap',
+});
+
+// Display face for headings and the oversized section numerals.
+const sora = Sora({
+  subsets: ['latin'],
+  variable: '--font-sora',
+  display: 'swap',
+  weight: ['400', '500', '600', '700', '800'],
 });
 
 export const metadata: Metadata = {
@@ -31,15 +39,18 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={inter.variable} suppressHydrationWarning>
+    <html lang="en" className={`${inter.variable} ${sora.variable}`} suppressHydrationWarning>
       <head>
         {/* Set the theme before paint to avoid a flash of the wrong mode. */}
         <script
           dangerouslySetInnerHTML={{
             __html: `
               try {
+                // NEXORA is dark-first: an explicit choice always wins, and a
+                // visitor who has not chosen gets dark regardless of OS theme,
+                // because the product is designed around the dark surfaces.
                 var t = localStorage.getItem('nexora-theme');
-                var d = t ? t === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+                var d = t ? t === 'dark' : true;
                 if (d) document.documentElement.classList.add('dark');
               } catch (e) {}
             `,

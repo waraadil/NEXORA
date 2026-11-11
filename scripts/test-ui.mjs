@@ -13,7 +13,7 @@ const env = Object.fromEntries(
     .map((l) => { const i = l.indexOf('='); return [l.slice(0, i).trim(), l.slice(i + 1).trim().replace(/^["']|["']$/g, '')]; }),
 );
 
-const BASE = 'http://localhost:3000';
+const BASE = process.env.NEXORA_BASE ?? 'http://localhost:3000';
 const admin = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false }, realtime: { transport: class {} },
 });
@@ -85,20 +85,25 @@ await page.keyboard.press('Escape');
 console.log('\n2. Theme toggle');
 await page.goto(`${BASE}/dashboard`, { waitUntil: 'networkidle' });
 const isDark = () => page.evaluate(() => document.documentElement.classList.contains('dark'));
-check('starts light', (await isDark()) === false);
-
-await page.locator('button[aria-label="Dark theme"]').first().click();
-await page.waitForTimeout(300);
-check('dark class applied', (await isDark()) === true);
-
+// NEXORA is dark-first: a visitor with no stored preference gets dark, whatever
+// their OS is set to. The toggle below still has to override it both ways.
+await page.evaluate(() => localStorage.removeItem('nexora-theme'));
 await page.reload({ waitUntil: 'networkidle' });
-await page.waitForTimeout(400);
-check('dark persists across reload', (await isDark()) === true);
-check('stored in localStorage', (await page.evaluate(() => localStorage.getItem('nexora-theme'))) === 'dark');
+await page.waitForTimeout(300);
+check('defaults to dark with no stored preference', (await isDark()) === true);
 
 await page.locator('button[aria-label="Light theme"]').first().click();
 await page.waitForTimeout(300);
-check('light class restored', (await isDark()) === false);
+check('light choice applied', (await isDark()) === false);
+
+await page.reload({ waitUntil: 'networkidle' });
+await page.waitForTimeout(400);
+check('light persists across reload', (await isDark()) === false);
+check('stored in localStorage', (await page.evaluate(() => localStorage.getItem('nexora-theme'))) === 'light');
+
+await page.locator('button[aria-label="Dark theme"]').first().click();
+await page.waitForTimeout(300);
+check('back to dark after toggling', (await isDark()) === true);
 
 console.log('\n3. 404 page');
 const res404 = await page.goto(`${BASE}/this-page-does-not-exist`, { waitUntil: 'domcontentloaded' });
