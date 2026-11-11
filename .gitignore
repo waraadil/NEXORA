@@ -45,3 +45,8 @@ next-env.d.ts
 
 # Template must be committed; real secrets must not.
 !.env.example
+
+# Relay: WhatsApp linked-device credentials. Committing these hands someone
+# your WhatsApp account. Never tracked, never shipped.
+relay/auth/
+**/nexora-relay/auth/

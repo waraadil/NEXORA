@@ -1,18 +1,12 @@
 'use client';
 
-import { useActionState, useState } from 'react';
+import { useActionState } from 'react';
 import { useFormStatus } from 'react-dom';
 import { Button } from '@/components/ui/button';
 import { Field, Input } from '@/components/ui/field';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { BRIDGE_RISKS } from '@/lib/whatsapp/bridge-risks';
-import {
-  connectCloudApi,
-  enablePersonalBridge,
-  disableIntegration,
-  type IntegrationState,
-} from './actions';
+import { connectCloudApi, disableIntegration, type IntegrationState } from './actions';
 
 function Submit({ idle, busy }: { idle: string; busy: string }) {
   const { pending } = useFormStatus();
@@ -36,20 +30,17 @@ type Integration = {
 export function IntegrationsClient({
   integration,
   cloudConversations,
-  bridgeConversations,
   appUrl,
 }: {
   integration: Integration | null;
   cloudConversations: number;
-  bridgeConversations: number;
   appUrl: string;
 }) {
-  const [tab, setTab] = useState<'cloud' | 'bridge'>('cloud');
   const [cloudState, cloudAction] = useActionState<IntegrationState, FormData>(connectCloudApi, null);
-  const [bridgeState, bridgeAction] = useActionState<IntegrationState, FormData>(enablePersonalBridge, null);
-  const [copied, setCopied] = useState(false);
 
-  const connected = integration?.status === 'connected';
+  // Only a Cloud API integration is managed from this card; a personal relay is
+  // handled by <WhatsappPersonal /> above and must never show a false "Connected".
+  const connected = integration?.status === 'connected' && integration.mode === 'cloud_api';
 
   return (
     <div className="space-y-6">
@@ -59,9 +50,7 @@ export function IntegrationsClient({
             <div className="flex items-center gap-2.5">
               <Badge tone="success">Connected</Badge>
               <span className="text-sm font-medium">
-                {integration!.mode === 'cloud_api'
-                  ? `Business number ${integration!.display_phone}`
-                  : 'Personal bridge active'}
+                Business number {integration!.display_phone}
               </span>
             </div>
             <form action={disableIntegration}>
@@ -73,40 +62,14 @@ export function IntegrationsClient({
         </Card>
       )}
 
-      {integration?.last_error && (
+      {integration?.last_error && integration?.mode === 'cloud_api' && (
         <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive-subtle px-3.5 py-2.5 text-sm text-destructive">
           {integration.last_error}
         </div>
       )}
 
-      {/* Tabs */}
-      <div className="flex gap-1 rounded-lg border border-border bg-surface-2 p-1" role="tablist">
-        {(
-          [
-            { id: 'cloud', label: 'Official — Business number' },
-            { id: 'bridge', label: 'Personal — self-hosted bridge' },
-          ] as const
-        ).map((t) => (
-          <button
-            key={t.id}
-            role="tab"
-            aria-selected={tab === t.id}
-            onClick={() => setTab(t.id)}
-            className={[
-              'flex-1 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-              tab === t.id
-                ? 'bg-surface text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground',
-            ].join(' ')}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
       {/* ── CLOUD API ── */}
-      {tab === 'cloud' && (
-        <div className="space-y-4">
+      <div className="space-y-4">
           <Card>
             <CardHeader>
               <CardTitle>WhatsApp Business Cloud API</CardTitle>
@@ -178,152 +141,7 @@ export function IntegrationsClient({
               official API.
             </p>
           )}
-        </div>
-      )}
-
-      {/* ── PERSONAL BRIDGE ── */}
-      {tab === 'bridge' && (
-        <div className="space-y-4">
-          <Card className="border-destructive/40">
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <Badge tone="destructive">High risk · unofficial</Badge>
-              </div>
-              <CardTitle className="mt-1">Read this before enabling</CardTitle>
-              <CardDescription>
-                This path uses your personal WhatsApp account. It is not sanctioned by Meta.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ul className="space-y-3">
-                {BRIDGE_RISKS.map((r) => (
-                  <li key={r.key} className="rounded-lg border border-border bg-surface-2 p-3">
-                    <p className="text-sm font-medium text-foreground">{r.title}</p>
-                    <p className="mt-1 text-sm text-muted-foreground text-pretty">{r.detail}</p>
-                  </li>
-                ))}
-              </ul>
-            </CardContent>
-          </Card>
-
-          {bridgeState?.bridgeToken ? (
-            <Card className="border-warning/40 bg-warning-subtle">
-              <CardHeader>
-                <CardTitle className="text-sm">Copy your bridge token now</CardTitle>
-                <CardDescription>
-                  It is shown once. Store it like a password — anyone with it can write conversations
-                  into your account.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <code className="block break-all rounded-lg border border-border bg-surface p-3 font-mono text-xs">
-                  {bridgeState.bridgeToken}
-                </code>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={async () => {
-                    await navigator.clipboard.writeText(bridgeState.bridgeToken!);
-                    setCopied(true);
-                    setTimeout(() => setCopied(false), 2000);
-                  }}
-                >
-                  {copied ? 'Copied' : 'Copy token'}
-                </Button>
-                <div className="rounded-lg border border-border bg-surface p-3 text-xs">
-                  <p className="font-medium">Then POST to this endpoint</p>
-                  <code className="mt-1 block break-all rounded bg-muted px-2 py-1.5 font-mono text-[11px]">
-                    POST {appUrl}/api/whatsapp/bridge/ingest
-                  </code>
-                  <pre className="mt-2 overflow-x-auto rounded bg-muted p-2 font-mono text-[11px] leading-relaxed">
-{`Authorization: Bearer <token>
-{
-  "chat": { "id": "919876543210@c.us", "name": "Asha", "isGroup": false },
-  "messages": [
-    { "id": "ABC123", "fromMe": false,
-      "senderName": "Asha", "body": "hey",
-      "timestamp": 1762800000 }
-  ]
-}`}
-                  </pre>
-                </div>
-              </CardContent>
-            </Card>
-          ) : (
-            <Card>
-              <CardHeader>
-                <CardTitle>Acknowledge every risk to continue</CardTitle>
-                <CardDescription>
-                  NEXORA hosts the ingest endpoint only. You run the bridge yourself, on your own
-                  machine, with your own account.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {bridgeState?.error && (
-                  <div role="alert" className="mb-3 rounded-lg border border-destructive/30 bg-destructive-subtle px-3.5 py-2.5 text-sm text-destructive">
-                    {bridgeState.error}
-                  </div>
-                )}
-
-                <form action={bridgeAction} className="space-y-4">
-                  <fieldset className="space-y-2">
-                    <legend className="text-sm font-medium">I understand that…</legend>
-                    {BRIDGE_RISKS.map((r) => (
-                      <label key={r.key} className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-border-strong p-3 text-sm hover:bg-muted/50">
-                        <input
-                          type="checkbox"
-                          name="ack"
-                          value={r.key}
-                          className="mt-0.5 size-4 shrink-0 accent-[hsl(var(--primary))]"
-                        />
-                        <span>{r.title}</span>
-                      </label>
-                    ))}
-                  </fieldset>
-
-                  <Field
-                    label="Type the confirmation phrase"
-                    htmlFor="confirm"
-                    required
-                    hint='Exactly: I understand the risks'
-                  >
-                    <Input
-                      id="confirm"
-                      name="confirm"
-                      placeholder="I understand the risks"
-                      autoComplete="off"
-                      required
-                    />
-                  </Field>
-
-                  <Button
-                    type="submit"
-                    variant="destructive"
-                    className="w-full"
-                  >
-                    Enable personal bridge
-                  </Button>
-                </form>
-              </CardContent>
-            </Card>
-          )}
-
-          {bridgeConversations > 0 && (
-            <p className="text-sm text-muted-foreground">
-              {bridgeConversations} conversation{bridgeConversations === 1 ? '' : 's'} received via the
-              bridge. These are tagged <code className="font-mono text-xs">personal_bridge</code> and
-              visually distinguished everywhere in the app.
-            </p>
-          )}
-
-          {integration?.mode === 'personal_bridge' && integration.bridge_last_seen_at && (
-            <p className="text-xs text-muted-foreground">
-              Bridge last reported in at{' '}
-              {new Date(integration.bridge_last_seen_at).toLocaleString()}.
-            </p>
-          )}
-        </div>
-      )}
+      </div>
     </div>
   );
 }

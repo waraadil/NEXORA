@@ -1,0 +1,20 @@
+{
+  "name": "nexora-whatsapp-relay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "NEXORA live WhatsApp relay — links your personal WhatsApp to NEXORA over a linked-device session.",
+  "type": "module",
+  "bin": {
+    "nexora-relay": "./relay.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node relay.mjs"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

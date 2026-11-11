@@ -25,9 +25,10 @@ matters, and drafts replies in your own voice — through your own AI provider k
 | **Search by meaning** | Every message is embedded into a vector; retrieval is cosine similarity over pgvector with an HNSW index. "The place with the squeaky camera" finds the chat without a keyword match. | your key |
 | **Draft replies** | Generates from the real conversation plus your style profile. Nothing is sent without you reading it. | your key |
 | **Away mode** | Holds replies inside a window and a rule set; you approve or discard each one from a queue. | your key |
+| **Live personal WhatsApp** | Links your own number as a linked device — no exports. Messages arrive as they are sent; NEXORA can answer in your voice. Groups are stored, never auto-answered. | your machine |
 
 > **No simulated data anywhere.** Every number on screen comes from a row in your database or a
-> live API response. When a feature cannot run — no key configured, no WhatsApp bridge — the UI
+> live API response. When a feature cannot run — no key configured, relay not running — the UI
 > says so instead of showing a plausible fake.
 
 ---
@@ -80,6 +81,24 @@ npm run dev                    # http://localhost:3000
 
 Generate a key with `openssl rand -hex 32`.
 
+### Live WhatsApp (optional)
+
+NEXORA links a personal number through a small local relay, the same mechanism
+as WhatsApp Web's linked devices:
+
+```bash
+npx github:waraadil/NEXORA#relay
+```
+
+Pairing is driven entirely from **Integrations → Personal WhatsApp**: you type
+your number, consent, and copy one generated command. No editing files, no
+pasting tokens into a script.
+
+> ⚠️ Automating a personal WhatsApp account breaks WhatsApp's Terms of Service
+> and can get the number permanently banned. The app requires explicit consent
+> and warns before pairing. See [`relay/README.md`](relay/README.md). The
+> official Business Cloud API path is built in and carries no such risk.
+
 ---
 
 ## Testing
@@ -97,20 +116,29 @@ node scripts/test-auth-e2e.mjs          # 27 checks — auth flows end to end
 node scripts/test-auth-pages.mjs        # 17 checks — auth page behaviour
 node scripts/test-ui.mjs                # 27 checks — layout, a11y, theme, mobile
 node scripts/test-provider-live.mjs     # 21 checks — live provider calls
+node scripts/test-relay.mjs             # 45 checks — WhatsApp relay end to end
+node scripts/test-relay-binary.mjs      #  5 checks — the shipped relay vs real WhatsApp
 ```
 
 Point any browser suite at a running server with `NEXORA_BASE=http://127.0.0.1:3100`.
 
-**Current status: 131 checks passing, 0 failing.**
+`test-relay.mjs` pairs a throwaway account through the UI, pushes messages over
+the real HTTP API, asserts attribution and dedupe, generates an actual AI reply,
+delivers it, and revokes the key. `test-relay-binary.mjs` runs the relay binary
+itself and asserts WhatsApp issues a live pairing code.
+
+**Current status: 181 checks passing, 0 failing.**
 
 ---
 
 ## Project layout
 
 ```
+relay/                          live WhatsApp relay — linked device, runs on your machine
 src/
 ├── app/
 │   ├── (auth)/                 sign-in, sign-up, forgot-password, OAuth callback
+│   ├── api/whatsapp/           Cloud API webhook + relay endpoints
 │   ├── conversations/          list, transcript, import wizard
 │   ├── contacts/ memory/ away/ assistant/ settings/ integrations/
 │   ├── error.tsx               per-route boundary — failures stay local
@@ -120,6 +148,8 @@ src/
 │   └── ui/                     buttons, cards, fields, badges
 ├── lib/
 │   ├── whatsapp/parser.ts      the export parser, with a regression suite
+│   ├── whatsapp/relay-sync.ts  attribution + dedupe for live messages
+│   ├── whatsapp/auto-reply.ts  the reply brain and every guard rail around it
 │   ├── text/names.ts           blank/invisible display-name handling
 │   ├── ai/                     provider adapters + prompt construction
 │   └── supabase/               server, client and admin clients

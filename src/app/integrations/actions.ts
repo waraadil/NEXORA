@@ -6,10 +6,10 @@ import { randomBytes } from 'node:crypto';
 import { createSupabaseServerClient, createSupabaseAdminClient } from '@/lib/supabase/server';
 import { encryptSecret, redactSecrets } from '@/lib/crypto';
 import { verifyCredentials } from '@/lib/whatsapp/cloud-api';
-import { issueBridgeToken, revokeBridge } from '@/lib/whatsapp/bridge';
+import { revokeRelay } from '@/lib/whatsapp/relay';
 
 export type IntegrationState =
-  | { error?: string; success?: string; fieldErrors?: Record<string, string>; bridgeToken?: string }
+  | { error?: string; success?: string; fieldErrors?: Record<string, string> }
   | null;
 
 async function requireUser() {
@@ -92,49 +92,12 @@ export async function connectCloudApi(
   };
 }
 
-/** Issue a personal-bridge token — only after explicit risk consent. */
-export async function enablePersonalBridge(
-  _prev: IntegrationState,
-  formData: FormData,
-): Promise<IntegrationState> {
-  const user = await requireUser();
-  if (!user) return { error: 'Session expired. Sign in again.' };
-
-  const acknowledged = formData.getAll('ack').map(String);
-  const required = [
-    'accountSuspensionRisk',
-    'termsOfServiceViolation',
-    'dataPrivacyResponsibility',
-    'noOfficialSupport',
-  ];
-
-  const missing = required.filter((r) => !acknowledged.includes(r));
-  if (missing.length > 0) {
-    return { error: 'You must acknowledge every risk before enabling the personal bridge.' };
-  }
-
-  if (formData.get('confirm') !== 'I understand the risks') {
-    return { error: 'Type the confirmation phrase exactly to proceed.' };
-  }
-
-  try {
-    const { token } = await issueBridgeToken(user.id);
-    revalidatePath('/integrations');
-    return {
-      success: 'Bridge token issued. Copy it now — it is not shown again.',
-      bridgeToken: token,
-    };
-  } catch (e) {
-    return { error: (e as Error).message };
-  }
-}
-
 export async function disableIntegration(): Promise<void> {
   const user = await requireUser();
   if (!user) return;
 
   const admin = createSupabaseAdminClient();
-  await revokeBridge(user.id);
+  await revokeRelay(user.id);
 
   await admin
     .from('whatsapp_integrations')
