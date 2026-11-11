@@ -4,12 +4,16 @@ Links **your own** WhatsApp number to NEXORA as a linked device, the same way
 WhatsApp Web does. Messages arrive in NEXORA as they are sent, and NEXORA can
 answer them in your voice.
 
+No install, no npm account, no global package:
+
 ```bash
-npx github:waraadil/NEXORA#relay
+NEXORA_URL=https://your-app.vercel.app NEXORA_PAIRING_CODE=nxr_relay_… \
+  node -e "const f=require('os').tmpdir()+'/nexora-relay.mjs';require('https').get('https://raw.githubusercontent.com/waraadil/NEXORA/main/relay/nexora-relay.mjs',r=>{const s=require('fs').createWriteStream(f);r.pipe(s);s.on('finish',()=>require('child_process').spawn(process.execPath,[f],{stdio:'inherit'}).on('exit',c=>process.exit(c||0)))})"
 ```
 
-You do not type anything else: the command in NEXORA → **Integrations** already
-carries your server URL and your pairing key.
+You never type this by hand — NEXORA generates it with your URL and key
+already filled in. It downloads the relay on first run (about a minute),
+then reuses it. State lives in `~/.nexora-relay`.
 
 ---
 
@@ -58,16 +62,15 @@ Guard rails, all enforced server-side:
 
 ## Restarting later
 
-```bash
-cd nexora-relay
-NEXORA_URL=https://your-app.vercel.app NEXORA_PAIRING_CODE=<your key> node relay.mjs
-```
+Re-run the same command NEXORA generated — it reconnects without pairing
+again. The relay itself lives in `~/.nexora-relay/relay.mjs` if you prefer to
+call it directly.
 
 Your key is under **Integrations → Personal WhatsApp → Your pairing key**
 (reveal it with the disclosure) or in the command shown on that page. Lost it?
 Disconnect and pair again — it takes a minute.
 
-`node relay.mjs --reset` clears the local session and forces a fresh pairing.
+`node ~/.nexora-relay/relay.mjs --reset` clears the local session and forces a fresh pairing.
 
 ## ⚠️ This can get your number banned
 

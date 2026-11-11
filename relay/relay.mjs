@@ -383,9 +383,21 @@ async function start() {
 async function resolvePairingPhone() {
   try {
     const state = await post('/api/whatsapp/relay/pairing-read', {});
-    if (state?.pairingPhone) return state.pairingPhone;
-  } catch {
-    /* pairing endpoint may not be readable yet — ask the human instead */
+    if (state?.pairingPhone) {
+      log(`Using the number entered in NEXORA: +${state.pairingPhone}`);
+      return state.pairingPhone;
+    }
+    if (state?.expired) {
+      log('! The pairing window in NEXORA expired, so there is no number on file.');
+      log('  Start again from NEXORA → Integrations to get a fresh command.');
+    } else {
+      log('! NEXORA has no number saved for this pairing.');
+    }
+  } catch (e) {
+    // Say WHY we are falling back. The old code swallowed this, so a revoked
+    // key looked like a random prompt with no explanation.
+    log(`! Could not read the pairing details from NEXORA: ${e.message}`);
+    log('  Falling back to asking here — the number is saved to NEXORA either way.');
   }
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });

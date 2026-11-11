@@ -99,7 +99,15 @@ export default async function IntegrationsPage() {
       <div className="space-y-8">
         <section>
           <h2 className="mb-3 text-lg font-semibold">Personal WhatsApp</h2>
-          <WhatsappPersonal relay={{ ...view }} drafts={drafts} baseUrl={getAppUrl()} />
+          <WhatsappPersonal
+            relay={{ ...view }}
+            drafts={drafts}
+            baseUrl={getAppUrl()}
+            // Pin the launcher to the exact revision this server is running:
+            // raw.githubusercontent serves stale trees from branch names, and
+            // the relay must match the API it is talking to.
+            relayRef={process.env.VERCEL_GIT_COMMIT_SHA || 'main'}
+          />
         </section>
 
         <section>

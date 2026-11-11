@@ -84,15 +84,13 @@ Generate a key with `openssl rand -hex 32`.
 ### Live WhatsApp (optional)
 
 NEXORA links a personal number through a small local relay, the same mechanism
-as WhatsApp Web's linked devices:
+as WhatsApp Web's linked devices.
 
-```bash
-npx github:waraadil/NEXORA#relay
-```
-
-Pairing is driven entirely from **Integrations → Personal WhatsApp**: you type
-your number, consent, and copy one generated command. No editing files, no
-pasting tokens into a script.
+Pairing is driven entirely from **Integrations → Personal WhatsApp**: type your
+number, consent, and copy the one command the page generates — it already
+carries your server URL and pairing key. Nothing to edit, nothing to install
+beyond Node 20; the launcher downloads and updates itself into
+`~/.nexora-relay`.
 
 > ⚠️ Automating a personal WhatsApp account breaks WhatsApp's Terms of Service
 > and can get the number permanently banned. The app requires explicit consent

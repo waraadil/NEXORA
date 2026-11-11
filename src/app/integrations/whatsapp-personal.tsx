@@ -93,10 +93,12 @@ export function WhatsappPersonal({
   relay,
   drafts,
   baseUrl,
+  relayRef,
 }: {
   relay: RelayView;
   drafts: DraftRow[];
   baseUrl: string;
+  relayRef: string;
 }) {
   const [stage, setStage] = useState<'closed' | 'details' | 'consent'>('closed');
 
@@ -145,9 +147,15 @@ export function WhatsappPersonal({
   //
   // One line, no npm login, no global install: the launcher downloads itself
   // and its dependencies into ~/.nexora-relay on first run.
+  const launcherUrl = `https://raw.githubusercontent.com/waraadil/NEXORA/${relayRef}/relay/nexora-relay.mjs`;
+
+  // Download, then run the file. `eval` cannot execute module syntax, and
+  // ES modules are the only sane format for this launcher.
+  const bootstrap = `node -e "const f=require('os').tmpdir()+'/nexora-relay.mjs';require('https').get('${launcherUrl}',r=>{if(r.statusCode!==200)throw new Error('download failed: HTTP '+r.statusCode);const s=require('fs').createWriteStream(f);r.pipe(s);s.on('finish',()=>require('child_process').spawn(process.execPath,[f],{stdio:'inherit'}).on('exit',c=>process.exit(c||0)))})"`;
+
   const command = relay.relayKey
-    ? `NEXORA_URL=${baseUrl} NEXORA_PAIRING_CODE=${relay.relayKey} node -e "fetch('https://raw.githubusercontent.com/waraadil/NEXORA/main/relay/nexora-relay.mjs').then(r=>r.text()).then(t=>eval(t))"`
-    : `NEXORA_URL=${baseUrl} NEXORA_PAIRING_CODE=<your key> node -e "…nexora-relay.mjs…"`;
+    ? `NEXORA_URL=${baseUrl} NEXORA_PAIRING_CODE=${relay.relayKey} ${bootstrap}`
+    : `NEXORA_URL=${baseUrl} NEXORA_PAIRING_CODE=<your key> ${bootstrap}`;
 
   // ── Live ────────────────────────────────────────────────────────────────
   if (live) {
@@ -228,8 +236,7 @@ export function WhatsappPersonal({
               same command and it reconnects without re-pairing.
             </p>
             <pre className="overflow-x-auto rounded-lg bg-muted p-2.5 font-mono text-[11px] text-foreground">
-{`NEXORA_URL=${baseUrl} NEXORA_PAIRING_CODE=${relay.relayKey ?? '<your key>'} \
-  node -e "fetch('https://raw.githubusercontent.com/waraadil/NEXORA/main/relay/nexora-relay.mjs').then(r=>r.text()).then(t=>eval(t))"`}
+{`NEXORA_URL=${baseUrl} NEXORA_PAIRING_CODE=${relay.relayKey ?? '<your key>'} ${bootstrap}`}
             </pre>
             <p>
               Your pairing key is stored on this device only. If you have lost it, disconnect here and
