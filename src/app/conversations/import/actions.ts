@@ -30,6 +30,7 @@ export type ImportState =
          */
         detectedMe: string | null;
         meSource: 'given' | 'auto' | 'none';
+        relationshipValue: string | null;
         preview: { sender: string; body: string; sentAt: string | null; isFromMe: boolean }[];
         /** True when the draft rows were persisted server-side and can be committed. */
         staged: boolean;
@@ -41,32 +42,15 @@ export type ImportState =
 const MAX_BYTES = 25 * 1024 * 1024;
 
 /**
- * Draft messages are kept in memory between the two steps of the wizard.
+ * Why there is no server-side draft store.
  *
- * They are NOT written to the database during staging: a 12-month export is
- * ~1.8 MB of text, and pushing that through a jsonb column would blow the row
- * limit. The parse is cheap (a single pass over the file), so we keep the
- * staged draft on the server keyed by a token and re-deliver it in step 2.
- * If the process that staged it is gone, step 2 re-parses the file the browser
- * still holds — see `commitImport`, which accepts the raw text as a fallback.
+ * The wizard has two steps, and on Vercel each request can land on a different
+ * serverless instance, each with its own memory. Keeping the parsed export in a
+ * module-level Map therefore "works" on a laptop and fails in production with
+ * "that import expired". Instead the browser keeps the file it already has and
+ * re-sends it on confirm; parsing 1.8 MB costs ~0.5 s, so the second pass is
+ * cheap and the flow is fully stateless.
  */
-const DRAFT_TTL_MS = 30 * 60 * 1000;
-type Draft = {
-  userId: string;
-  filename: string;
-  meName: string;
-  relationship: string | null;
-  isGroup: boolean;
-  parsed: ParsedMessage[];
-  createdAt: number;
-};
-const globalForDrafts = globalThis as unknown as { __nexoraDrafts?: Map<string, Draft> };
-const drafts: Map<string, Draft> = (globalForDrafts.__nexoraDrafts ??= new Map());
-
-function sweepDrafts() {
-  const cutoff = Date.now() - DRAFT_TTL_MS;
-  for (const [id, d] of drafts) if (d.createdAt < cutoff) drafts.delete(id);
-}
 
 /**
  * Decide which sender in the export is the device owner.
@@ -74,7 +58,7 @@ function sweepDrafts() {
  * Exports label the owner inconsistently: "You" on many Android builds, their
  * saved contact name on others, and on some phones a filler character the user
  * chose to make their name appear blank (U+3164 is the common one). Guessing
- * wrong flips every message's direction, so:
+ * wrong flips the direction of every message, so:
  *   1. Trust an explicit name only when it actually appears as a sender.
  *   2. Otherwise, if exactly one sender has an unreadable name, that is almost
  *      certainly the owner — nobody names a contact with an invisible glyph.
@@ -94,11 +78,18 @@ function detectOwner(
     if (hit) return { meName: hit, source: 'given' };
   }
 
-  // No readable typed name matched. Look for an unreadable sender.
   const blanks = [...senders.entries()].filter(([name]) => isBlankName(name));
   if (blanks.length === 1) return { meName: blanks[0][0], source: 'auto' };
 
   return { meName: null, source: 'none' };
+}
+
+/** Parse + decide ownership. Shared by both steps so they can never disagree. */
+function analyse(raw: string, typedMeName: string) {
+  const probe = parseWhatsAppExport(raw, { meName: '\u0000no-match' });
+  const owner = detectOwner(probe.messages, typedMeName);
+  if (!owner.meName) return { probe, owner, parsed: null };
+  return { probe, owner, parsed: parseWhatsAppExport(raw, { meName: owner.meName }) };
 }
 
 /** Step 1 — parse the uploaded export and stage a draft. Nothing is persisted yet. */
@@ -141,9 +132,10 @@ export async function stageImport(_prev: ImportState, formData: FormData): Promi
 
   const typedMeName = String(formData.get('meName') ?? '').trim();
   const relationship = String(formData.get('relationship') ?? '').trim() || null;
+  void relationship;
 
   // Parse once, decide ownership, then re-derive isFromMe with the answer.
-  const probe = parseWhatsAppExport(raw, { meName: '\u0000no-match' });
+  const { probe, owner, parsed } = analyse(raw, typedMeName);
   if (probe.messages.length === 0) {
     return {
       error:
@@ -151,8 +143,7 @@ export async function stageImport(_prev: ImportState, formData: FormData): Promi
     };
   }
 
-  const owner = detectOwner(probe.messages, typedMeName);
-  if (!owner.meName) {
+  if (!owner.meName || !parsed) {
     const names = probe.participants.map((p) => p.displayName).join(', ');
     return {
       fieldErrors: {
@@ -161,20 +152,10 @@ export async function stageImport(_prev: ImportState, formData: FormData): Promi
     };
   }
 
-  const parsed = parseWhatsAppExport(raw, { meName: owner.meName });
-
-  sweepDrafts();
   const otherParticipants = parsed.participants;
+  // Nothing is persisted yet; the id just ties the two steps together in the UI.
   const batchId = crypto.randomUUID();
-  drafts.set(batchId, {
-    userId: user.id,
-    filename: file.name,
-    meName: owner.meName,
-    relationship,
-    isGroup: otherParticipants.length > 1,
-    parsed: parsed.messages,
-    createdAt: Date.now(),
-  });
+  void relationship; // captured on the commit step, where it is actually written
 
   return {
     batch: {
@@ -191,6 +172,7 @@ export async function stageImport(_prev: ImportState, formData: FormData): Promi
       lastDate: parsed.dateRange.last,
       detectedMe: owner.meName,
       meSource: owner.source,
+      relationshipValue: relationship,
       staged: true,
       preview: parsed.messages.slice(0, 8).map((m) => ({
         sender: m.isFromMe ? 'You' : m.senderDisplay,
@@ -210,39 +192,58 @@ export async function commitImport(_prev: ImportState, formData: FormData): Prom
   } = await supabase.auth.getUser();
   if (!user) return { error: 'Your session expired. Sign in again.' };
 
-  const parsed = z
+  const parsedInput = z
     .object({
       batchId: z.string().min(8),
       contactName: z.string().trim().min(1, 'Confirm the contact name').max(120),
+      meName: z.string().default(''),
+      relationship: z.string().max(60).optional(),
     })
     .safeParse({
       batchId: formData.get('batchId'),
       contactName: formData.get('contactName'),
+      meName: formData.get('meName') ?? '',
+      relationship: String(formData.get('relationship') ?? '') || undefined,
     });
 
-  if (!parsed.success) {
+  if (!parsedInput.success) {
     const fieldErrors: Record<string, string> = {};
-    for (const issue of parsed.error.issues) fieldErrors[String(issue.path[0])] = issue.message;
+    for (const issue of parsedInput.error.issues) fieldErrors[String(issue.path[0])] = issue.message;
     return { fieldErrors };
   }
 
-  const contactName = cleanName(parsed.data.contactName);
+  const contactName = cleanName(parsedInput.data.contactName);
   if (!contactName) {
     return {
       fieldErrors: { contactName: 'That name is blank or invisible — pick a name you can read.' },
     };
   }
 
-  const draft = drafts.get(parsed.data.batchId);
-  if (!draft) {
-    return {
-      error:
-        'That import expired or the server restarted mid-import. Re-upload the file — it takes a few seconds.',
-    };
+  // The browser still holds the file; re-parse it here rather than trusting a
+  // server-side draft, which would not survive a different serverless instance.
+  const file = formData.get('file');
+  if (!(file instanceof File) || file.size === 0) {
+    return { error: 'The export file was not sent with the confirmation. Re-upload and try again.' };
   }
-  if (draft.userId !== user.id) return { error: 'That import belongs to another account.' };
+  if (file.size > MAX_BYTES) {
+    return { error: `That file is ${(file.size / 1024 / 1024).toFixed(1)} MB — the limit is 25 MB.` };
+  }
+  const raw = await file.text();
+  if (!looksLikeWhatsAppExport(raw)) {
+    return { error: 'That file no longer looks like a WhatsApp export. Re-upload and try again.' };
+  }
+
+  const { owner, parsed: parsedExport } = analyse(raw, parsedInput.data.meName);
+  if (!owner.meName || !parsedExport || parsedExport.messages.length === 0) {
+    return { error: 'Could not identify your messages in that export. Re-upload and set your name.' };
+  }
 
   const admin = createSupabaseAdminClient();
+  const messagesIn = parsedExport.messages;
+  const isGroup = parsedExport.participants.length > 1;
+  const relationship = parsedInput.data.relationship ?? null;
+  const lastSentAt = messagesIn[messagesIn.length - 1]?.sentAt ?? null;
+  const firstSentAt = messagesIn[0]?.sentAt ?? null;
 
   // ── Contact ──
   let contactId: string;
@@ -253,13 +254,15 @@ export async function commitImport(_prev: ImportState, formData: FormData): Prom
     .ilike('display_name', contactName)
     .maybeSingle();
 
-  const lastSentAt = draft.parsed[draft.parsed.length - 1]?.sentAt ?? null;
-
   if (existingContact) {
     contactId = existingContact.id as string;
     await admin
       .from('contacts')
-      .update({ relationship: draft.relationship ?? undefined, last_interaction_at: lastSentAt })
+      .update({
+        ...(relationship ? { relationship } : {}),
+        last_interaction_at: lastSentAt,
+        is_group: isGroup,
+      })
       .eq('id', contactId)
       .eq('user_id', user.id);
   } else {
@@ -268,13 +271,14 @@ export async function commitImport(_prev: ImportState, formData: FormData): Prom
       .insert({
         user_id: user.id,
         display_name: contactName,
-        relationship: draft.relationship,
-        is_group: draft.isGroup,
+        relationship,
+        is_group: isGroup,
         last_interaction_at: lastSentAt,
       })
       .select('id')
       .single();
-    if (error || !created) return { error: `Could not create the contact: ${error?.message ?? 'unknown'}` };
+    if (error || !created)
+      return { error: `Could not create the contact: ${error?.message ?? 'unknown error'}` };
     contactId = created.id as string;
   }
 
@@ -298,13 +302,13 @@ export async function commitImport(_prev: ImportState, formData: FormData): Prom
         contact_id: contactId,
         title: contactName,
         source: 'manual',
-        first_message_at: draft.parsed[0]?.sentAt ?? null,
+        first_message_at: firstSentAt,
         last_message_at: lastSentAt,
       })
       .select('id')
       .single();
     if (error || !created)
-      return { error: `Could not create the conversation: ${error?.message ?? 'unknown'}` };
+      return { error: `Could not create the conversation: ${error?.message ?? 'unknown error'}` };
     conversationId = created.id as string;
   }
 
@@ -317,8 +321,8 @@ export async function commitImport(_prev: ImportState, formData: FormData): Prom
   let errors = 0;
   let firstError: string | null = null;
 
-  for (let i = 0; i < draft.parsed.length; i += CHUNK) {
-    const slice = draft.parsed.slice(i, i + CHUNK).map((m) => ({
+  for (let i = 0; i < messagesIn.length; i += CHUNK) {
+    const slice = messagesIn.slice(i, i + CHUNK).map((m) => ({
       user_id: user.id,
       conversation_id: conversationId,
       sender_name: m.isFromMe ? 'You' : m.senderDisplay,
@@ -344,35 +348,35 @@ export async function commitImport(_prev: ImportState, formData: FormData): Prom
   }
 
   if (errors > 0 && inserted === 0) {
-    return { error: `Every message failed to save. First error from the database: ${firstError}` };
+    return { error: `Every message failed to save. First database error: ${firstError}` };
   }
 
-  // Authoritative rollups from the table itself, not from what we think we sent.
-  const { data: firstRow } = await admin
-    .from('messages')
-    .select('sent_at')
-    .eq('conversation_id', conversationId)
-    .eq('user_id', user.id)
-    .not('sent_at', 'is', null)
-    .order('sent_at', { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  const { data: lastRow } = await admin
-    .from('messages')
-    .select('sent_at')
-    .eq('conversation_id', conversationId)
-    .eq('user_id', user.id)
-    .not('sent_at', 'is', null)
-    .order('sent_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  const { count: totalCount } = await admin
-    .from('messages')
-    .select('id', { count: 'exact', head: true })
-    .eq('conversation_id', conversationId)
-    .eq('user_id', user.id);
+  // Authoritative rollups read back from the table, not from what we sent.
+  const [{ data: firstRow }, { data: lastRow }, { count: totalCount }] = await Promise.all([
+    admin
+      .from('messages')
+      .select('sent_at')
+      .eq('conversation_id', conversationId)
+      .eq('user_id', user.id)
+      .not('sent_at', 'is', null)
+      .order('sent_at', { ascending: true })
+      .limit(1)
+      .maybeSingle(),
+    admin
+      .from('messages')
+      .select('sent_at')
+      .eq('conversation_id', conversationId)
+      .eq('user_id', user.id)
+      .not('sent_at', 'is', null)
+      .order('sent_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    admin
+      .from('messages')
+      .select('id', { count: 'exact', head: true })
+      .eq('conversation_id', conversationId)
+      .eq('user_id', user.id),
+  ]);
 
   await admin
     .from('conversations')
@@ -384,23 +388,15 @@ export async function commitImport(_prev: ImportState, formData: FormData): Prom
     .eq('id', conversationId)
     .eq('user_id', user.id);
 
-  drafts.delete(parsed.data.batchId);
-
   revalidatePath('/conversations');
+  revalidatePath(`/conversations/${conversationId}`);
   revalidatePath('/contacts');
   revalidatePath('/dashboard');
 
   return { committed: { conversationId, inserted, duplicates, errors } };
 }
 
-/** Discard a staged import. */
-export async function discardImport(batchId: string): Promise<void> {
-  const supabase = await createSupabaseServerClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return;
-
-  const draft = drafts.get(batchId);
-  if (draft && draft.userId === user.id) drafts.delete(batchId);
+/** Kept for API compatibility; there is no server-side draft to discard. */
+export async function discardImport(_batchId: string): Promise<void> {
+  void _batchId;
 }

@@ -29,6 +29,9 @@ export function ImportWizard({ onDone }: { onDone?: () => void }) {
   const [commitState, commitAction] = useActionState<ImportState, FormData>(commitImport, null);
   const [contactName, setContactName] = useState('');
   const [needsZip, setNeedsZip] = useState(false);
+  // Step 2 must send the file too: the server keeps no draft, because on
+  // serverless each request may reach a different instance.
+  const [file, setFile] = useState<File | null>(null);
 
   const batch = stageState && 'batch' in stageState ? stageState.batch : undefined;
   const committed = commitState && 'committed' in commitState ? commitState.committed : undefined;
@@ -184,6 +187,27 @@ export function ImportWizard({ onDone }: { onDone?: () => void }) {
 
             <form action={commitAction} className="space-y-3">
               <input type="hidden" name="batchId" value={batch.id} />
+              <input type="hidden" name="meName" value={batch.detectedMe ?? ''} />
+              <input type="hidden" name="relationship" value={batch.relationshipValue ?? ''} />
+              {/*
+                Step 2 re-sends the export. A file input cannot be prefilled, so
+                it stays visually hidden and the browser's DataTransfer is used
+                to attach the File the user picked in step 1.
+              */}
+              <input
+                type="file"
+                name="file"
+                aria-hidden="true"
+                tabIndex={-1}
+                className="sr-only"
+                ref={(el) => {
+                  if (!el || !file) return;
+                  if (el.files?.length === 1) return;
+                  const dt = new DataTransfer();
+                  dt.items.add(file);
+                  el.files = dt.files;
+                }}
+              />
               <Field
                 label="Contact name"
                 htmlFor="contactName"
@@ -249,7 +273,13 @@ export function ImportWizard({ onDone }: { onDone?: () => void }) {
               type="file"
               accept=".txt,text/plain"
               required
-              onChange={(e) => setNeedsZip(e.target.files?.[0]?.name?.toLowerCase().endsWith('.zip') ?? false)}
+              onChange={(e) => {
+                const picked = e.target.files?.[0] ?? null;
+                setNeedsZip(picked?.name?.toLowerCase().endsWith('.zip') ?? false);
+                // Keep the file for step 2: the server stores no draft, so the
+                // confirmation request must carry the export again.
+                setFile(picked);
+              }}
               className="block w-full cursor-pointer rounded-lg border border-border-strong bg-surface text-sm file:mr-3 file:cursor-pointer file:border-0 file:bg-primary-subtle file:px-3 file:py-2.5 file:text-sm file:font-medium file:text-primary hover:file:bg-primary/15"
             />
           </Field>
