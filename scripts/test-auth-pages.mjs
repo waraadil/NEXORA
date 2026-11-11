@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import { chromium } from 'playwright';
 
-const BASE = 'http://localhost:3000';
+const BASE = process.env.NEXORA_BASE ?? 'http://localhost:3000';
 
 // The correct behaviour depends on whether Google is enabled on the Supabase
 // project, so read that rather than hardcoding an assumption. A previous

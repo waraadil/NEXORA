@@ -18,9 +18,24 @@
  */
 
 import { createHash } from 'node:crypto';
+import { cleanName, isBlankName } from '@/lib/text/names';
+
+/**
+ * Are these the same person? Blank/invisible names only match other blank
+ * names — never a real one wrapped around them.
+ */
+function sameName(a: string, b: string): boolean {
+  const na = cleanName(a).toLowerCase();
+  const nb = cleanName(b).toLowerCase();
+  if (na && nb) return na === nb;
+  return isBlankName(a) && isBlankName(b);
+}
 
 export type ParsedMessage = {
+  /** Exactly as written in the export — the identity key for "is this me?". */
   senderName: string;
+  /** Safe to render: never empty, never invisible. */
+  senderDisplay: string;
   isFromMe: boolean;
   body: string;
   sentAt: string | null; // ISO
@@ -38,9 +53,10 @@ export type ParseIssue = {
 export type ParseResult = {
   messages: ParsedMessage[];
   issues: ParseIssue[];
-  participants: { name: string; messageCount: number }[];
+  participants: { name: string; displayName: string; messageCount: number }[];
   isGroup: boolean;
   systemLineCount: number;
+  duplicateCount: number;
   dateRange: { first: string | null; last: string | null };
   formatDetected: string;
 };
@@ -57,11 +73,23 @@ const PREFIX_DASHED =
 
 // Stage 2: split "Sender: body". Sender may not contain a colon; body may.
 // Supports "-" (unknown participant) and long names up to 80 chars.
-const SENDER_BODY = /^([^:\n]{1,80}?):\s?([\s\S]*)$/;
+//
+// The lazy quantifier stops at the FIRST colon, which is wrong when a system
+// notice carries its own timestamp after the dash:
+//   "27/05/26, 11:41 pm - Messages ... encrypted"
+// Here the sender group would be "11". Guard against that by requiring the
+// colon to be followed by whitespace or end-of-line — every real export writes
+// "Name: body", while a clock reads "11:41". When no colon satisfies that we
+// fall back to the loose pattern so a body like "Name:body" still parses.
+const SENDER_BODY = /^([^:\n]{1,80}?):(?:\s([\s\S]*)|$)/;
+const SENDER_BODY_LOOSE = /^([^:\n]{1,80}?):([\s\S]*)$/;
 
 // Lines WhatsApp injects that are not conversation content
 const SYSTEM_PATTERNS = [
   /messages and calls are end-to-end encrypted/i,
+  /changed (their|your) phone number/i,
+  /^you'?re currently chatting with/i,
+  /^tap to (add|learn)/i,
   /you created (this )?group/i,
   /added you$/i,
   /changed the subject/i,
@@ -227,10 +255,11 @@ export function parseWhatsAppExport(raw: string, options: ParseOptions = {}): Pa
       const remainder = pre[3] ?? '';
       fmt = line.startsWith('[') ? 'ios-bracketed' : 'android-dash';
 
-      const sb = remainder.match(SENDER_BODY);
+      const strict = remainder.match(SENDER_BODY);
+      const sb = strict ?? remainder.match(SENDER_BODY_LOOSE);
       if (sb) {
         sender = sb[1];
-        body = sb[2];
+        body = sb[2] ?? '';
       }
     }
 
@@ -247,7 +276,7 @@ export function parseWhatsAppExport(raw: string, options: ParseOptions = {}): Pa
       // how WhatsApp labels the export owner's own messages.
       const isSystem =
         sender === null ||
-        cleanSender === '' ||
+        (cleanSender === '' && body === null) ||
         cleanSender === '-' ||
         (body !== null && SYSTEM_PATTERNS.some((p) => p.test(body))) ||
         SYSTEM_PATTERNS.some((p) => p.test(remainderText));
@@ -270,12 +299,11 @@ export function parseWhatsAppExport(raw: string, options: ParseOptions = {}): Pa
       }
 
       const meName = options.fromMeName ?? options.meName;
-      const isFromMe = meName
-        ? cleanSender.toLowerCase() === meName.trim().toLowerCase()
-        : false;
+      const isFromMe = meName ? sameName(cleanSender, meName) : false;
 
       current = {
         senderName: cleanSender,
+        senderDisplay: cleanName(cleanSender) || (isFromMe ? 'You' : 'Unknown contact'),
         isFromMe,
         body: bodyText,
         sentAt,
@@ -313,14 +341,35 @@ export function parseWhatsAppExport(raw: string, options: ParseOptions = {}): Pa
     msg.hash = messageHash(msg.senderName, msg.body, msg.sentAt, 0);
   }
 
+  // Identical (sender, timestamp, body) triples occur in real exports — the
+  // same notice pasted twice, or a message re-sent within the same minute.
+  // The DB unique index on (conversation_id, message_hash) would reject the
+  // second copy and report it as an error, so collapse them here and count it
+  // honestly instead.
+  const seen = new Set<string>();
+  const deduped: ParsedMessage[] = [];
+  let duplicateCount = 0;
+  for (const msg of messages) {
+    if (seen.has(msg.hash)) {
+      duplicateCount++;
+      continue;
+    }
+    seen.add(msg.hash);
+    deduped.push(msg);
+  }
+  messages.length = 0;
+  messages.push(...deduped);
+
   // Participants
-  const counts = new Map<string, number>();
+  const counts = new Map<string, { count: number; display: string }>();
   for (const msg of messages) {
     if (msg.isFromMe) continue;
-    counts.set(msg.senderName, (counts.get(msg.senderName) ?? 0) + 1);
+    const entry = counts.get(msg.senderName);
+    if (entry) entry.count++;
+    else counts.set(msg.senderName, { count: 1, display: msg.senderDisplay });
   }
   const participants = [...counts.entries()]
-    .map(([name, messageCount]) => ({ name, messageCount }))
+    .map(([name, v]) => ({ name, displayName: v.display, messageCount: v.count }))
     .sort((a, b) => b.messageCount - a.messageCount);
 
   const dated = messages.filter((m) => m.sentAt).map((m) => m.sentAt!) as string[];
@@ -332,6 +381,7 @@ export function parseWhatsAppExport(raw: string, options: ParseOptions = {}): Pa
     participants,
     isGroup: participants.length > 1,
     systemLineCount,
+    duplicateCount,
     dateRange: {
       first: dated[0] ?? null,
       last: dated[dated.length - 1] ?? null,

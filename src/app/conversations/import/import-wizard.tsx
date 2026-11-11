@@ -8,6 +8,7 @@ import { Field, Input, Select } from '@/components/ui/field';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { stageImport, commitImport, type ImportState } from './actions';
+import { isBlankName } from '@/lib/text/names';
 
 function Submit({ idle, busy, className }: { idle: string; busy: string; className?: string }) {
   const { pending } = useFormStatus();
@@ -61,7 +62,7 @@ export function ImportWizard({ onDone }: { onDone?: () => void }) {
 
   // ── Step 2: review ──
   if (batch) {
-    const suggested = batch.participants[0]?.name ?? '';
+    const suggested = batch.participants[0]?.displayName || '';
     return (
       <div className="space-y-4">
         <Card>
@@ -72,10 +73,14 @@ export function ImportWizard({ onDone }: { onDone?: () => void }) {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+            <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-5">
               <div>
                 <dt className="text-xs text-muted-foreground">Messages parsed</dt>
                 <dd className="text-lg font-semibold tabular-nums">{batch.totalParsed}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted-foreground">Duplicates skipped</dt>
+                <dd className="text-lg font-semibold tabular-nums">{batch.duplicates}</dd>
               </div>
               <div>
                 <dt className="text-xs text-muted-foreground">Participants</dt>
@@ -94,6 +99,31 @@ export function ImportWizard({ onDone }: { onDone?: () => void }) {
             </dl>
 
             <div className="rounded-lg border border-border bg-surface-2 p-3 text-xs">
+              <p className="font-medium text-foreground">Your messages</p>
+              <p className="mt-0.5 text-muted-foreground">
+                {batch.meSource === 'given' && (
+                  <>
+                    Matched the name you typed: <span className="font-mono">{batch.detectedMe}</span>
+                  </>
+                )}
+                {batch.meSource === 'auto' && (
+                  <>
+                    Auto-detected. In this export your own messages are labelled{' '}
+                    {isBlankName(batch.detectedMe ?? '') ? (
+                      <span className="font-medium text-foreground">
+                        with a blank name (an invisible character)
+                      </span>
+                    ) : (
+                      <span className="font-mono">{batch.detectedMe}</span>
+                    )}
+                    . Wrong? Go back and type your name exactly as it appears.
+                  </>
+                )}
+                {batch.meSource === 'none' && 'Not determined — messages will import unattributed.'}
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-border bg-surface-2 p-3 text-xs">
               <p className="font-medium text-foreground">Detected format</p>
               <p className="mt-0.5 text-muted-foreground">
                 {batch.format} · {batch.isGroup ? 'Group chat' : 'Direct chat'}
@@ -109,7 +139,9 @@ export function ImportWizard({ onDone }: { onDone?: () => void }) {
                 <ul className="space-y-1">
                   {batch.participants.map((p) => (
                     <li key={p.name} className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm">
-                      <span className="truncate font-medium">{p.name}</span>
+                      <span className="truncate font-medium">
+                        {p.displayName || <span className="italic text-muted-foreground">Unnamed sender</span>}
+                      </span>
                       <span className="text-xs text-muted-foreground">{p.messageCount} messages</span>
                     </li>
                   ))}
@@ -215,7 +247,7 @@ export function ImportWizard({ onDone }: { onDone?: () => void }) {
               id="file"
               name="file"
               type="file"
-              accept=".txt,.zip,text/plain,application/zip"
+              accept=".txt,text/plain"
               required
               onChange={(e) => setNeedsZip(e.target.files?.[0]?.name?.toLowerCase().endsWith('.zip') ?? false)}
               className="block w-full cursor-pointer rounded-lg border border-border-strong bg-surface text-sm file:mr-3 file:cursor-pointer file:border-0 file:bg-primary-subtle file:px-3 file:py-2.5 file:text-sm file:font-medium file:text-primary hover:file:bg-primary/15"
@@ -232,11 +264,10 @@ export function ImportWizard({ onDone }: { onDone?: () => void }) {
           <Field
             label="Your name in this export"
             htmlFor="meName"
-            required
-            hint="How your own messages are labelled — often just “You”. Use exactly what appears in the file."
+            hint="Optional. Leave blank and NEXORA works it out — it looks for “You”, your saved name, or a sender whose name is blank/invisible, which is what phones use when someone has no display name."
             error={stageState && 'fieldErrors' in stageState ? stageState.fieldErrors?.meName : undefined}
           >
-            <Input id="meName" name="meName" placeholder="You" defaultValue="You" required />
+            <Input id="meName" name="meName" placeholder="Leave blank to auto-detect" />
           </Field>
 
           <Field label="Relationship" htmlFor="relationship" hint="Helps NEXORA understand how you speak to this person.">

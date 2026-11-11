@@ -23,7 +23,7 @@ const env = Object.fromEntries(
     }),
 );
 
-const BASE = 'http://localhost:3000';
+const BASE = process.env.NEXORA_BASE ?? 'http://localhost:3000';
 const admin = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
   realtime: { transport: class {} },

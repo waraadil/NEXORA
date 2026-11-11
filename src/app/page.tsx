@@ -208,7 +208,7 @@ export default async function Home() {
 
       <footer className="border-t border-border">
         <div className="mx-auto flex max-w-6xl flex-col items-start justify-between gap-3 px-5 py-7 text-sm text-muted-foreground sm:flex-row sm:items-center sm:px-8">
-          <span>© {new Date().getFullYear()} NEXORA</span>
+          <span>© NEXORA</span>
           <span className="flex items-center gap-4">
             <Link href="/login" className="hover:text-foreground">
               Sign in

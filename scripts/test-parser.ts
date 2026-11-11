@@ -125,4 +125,43 @@ check('Arabic export with bidi marks and Arabic-Indic digits', () => {
   assert.ok(r.messages.length >= 1);
 });
 
+
+
+// ── Regression: a real Android export where the owner has no display name ──
+{
+  // U+3164 HANGUL FILLER — what Android writes when the user set a blank name.
+  const BLANK = '\u3164';
+  const exportText = [
+    '27/05/26, 11:41\u202fpm - Messages and calls are end-to-end encrypted. Only people in this chat can read, listen to, or share them. *Learn more*',
+    "28/05/26, 6:48\u202fpm - Mumma\u2764\ufe0f\ud83d\udc97 changed their phone number. You're currently chatting with their new number. Tap to add it to your contacts.",
+    '28/05/26, 6:49\u202fpm - Mittttrrrrr: Hlo',
+    `28/05/26, 6:58\u202fpm - ${BLANK}: Hmm`,
+    '28/05/26, 7:06\u202fpm - Mittttrrrrr: Mna number chnge kra',
+    `28/05/26, 7:08\u202fpm - ${BLANK}: On hi hai`,
+    '28/05/26, 7:50\u202fpm - Mittttrrrrr: <Media omitted>',
+    `28/05/26, 7:50\u202fpm - ${BLANK}: ok`,
+  ].join('\n');
+
+  const r = parseWhatsAppExport(exportText, { meName: BLANK });
+
+  check('U+202F timestamps do not create a bogus numeric sender', () => {
+    assert.ok(r.participants.every((p) => !/^\d/.test(p.name)), 'numeric sender leaked in');
+  });
+  check('invisible U+3164 sender is recognised as "me"', () => {
+    assert.strictEqual(r.messages.filter((m) => m.isFromMe).length, 3);
+  });
+  check('the other party keeps their real name', () => {
+    assert.ok(r.messages.filter((m) => !m.isFromMe).every((m) => m.senderName === 'Mittttrrrrr'));
+  });
+  check('no message has a blank display name', () => {
+    assert.ok(r.messages.every((m) => m.senderDisplay.trim().length > 0));
+  });
+  check('banner and number-change notice are skipped as system lines', () => {
+    assert.strictEqual(r.systemLineCount, 2);
+  });
+  check('a clean export produces no issues', () => {
+    assert.strictEqual(r.issues.length, 0);
+  });
+}
+
 console.log(`\n${passed} checks passed\n`);
