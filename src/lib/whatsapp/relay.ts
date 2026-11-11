@@ -248,6 +248,8 @@ export type RelayState = {
   deviceName: string | null;
   pairingPhone: string | null;
   pairingExpiresAt: string | null;
+  /** Code WhatsApp issued, rendered in the app. Null until the agent reports it. */
+  pairingCode: string | null;
   lastError: string | null;
   autoReplyEnabled: boolean;
   requireApproval: boolean;
@@ -268,6 +270,7 @@ export function describeRelay(row: Record<string, unknown> | null): RelayState {
     deviceName: null,
     pairingPhone: null,
     pairingExpiresAt: null,
+    pairingCode: null,
     lastError: null,
     autoReplyEnabled: false,
     requireApproval: false,
@@ -294,6 +297,7 @@ export function describeRelay(row: Record<string, unknown> | null): RelayState {
     deviceName: (row.bridge_device_name as string | null) ?? null,
     pairingPhone: (row.bridge_pairing_phone as string | null) ?? null,
     pairingExpiresAt: pairingAt ? new Date(pairingAt + PAIRING_TTL_MS).toISOString() : null,
+    pairingCode: (row.pairing_code as string | null) ?? null,
     lastError: (row.last_error as string | null) ?? null,
     autoReplyEnabled: !!row.auto_reply_enabled,
     requireApproval: !!row.auto_reply_require_approval,

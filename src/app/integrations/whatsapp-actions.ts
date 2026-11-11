@@ -3,7 +3,9 @@
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { createSupabaseServerClient, createSupabaseAdminClient } from '@/lib/supabase/server';
-import { startPairing, revokeRelay, normalizePairingPhone } from '@/lib/whatsapp/relay';
+import { revokeRelay, normalizePairingPhone } from '@/lib/whatsapp/relay';
+import { revokeAgent } from '@/lib/whatsapp/agent-auth';
+import { startAgentLink } from '@/lib/whatsapp/agent-link';
 import { REQUIRED_ACKNOWLEDGEMENTS, CONFIRMATION_PHRASE } from '@/lib/whatsapp/bridge-risks';
 import { isRelayLive } from '@/lib/whatsapp/relay';
 
@@ -24,11 +26,17 @@ export type PairingState =
       error?: string;
       fieldErrors?: Record<string, string>;
       step?: 'idle' | 'ready' | 'linked';
-      relayKey?: string;
-      command?: string;
       phone?: string;
+      /** True when an always-on agent adopted the pairing and will post a code. */
+      agentAdopted?: boolean;
     }
   | null;
+
+/** Absolute URL the agent should talk to. */
+async function appBaseUrl(): Promise<string> {
+  const { getAppUrl } = await import('@/lib/app-url');
+  return getAppUrl();
+}
 
 async function requireUser() {
   const supabase = await createSupabaseServerClient();
@@ -80,11 +88,25 @@ export async function beginPairing(
   }
 
   try {
-    await startPairing(user.id, phone);
-    // The key and the ready-to-paste command are read back from the page, so
-    // they survive a reload and never depend on this action's return value.
+    // Hand the pairing to the always-on agent. It asks WhatsApp for the code and
+    // posts it back, so the next render shows the code — no command to run.
+    const link = await startAgentLink({
+      userId: user.id,
+      phone,
+      appUrl: await appBaseUrl(),
+    });
+
     revalidatePath('/integrations');
-    return { step: 'ready', phone };
+
+    if (link.error) {
+      return {
+        error: link.agentConfigured
+          ? link.error
+          : 'No WhatsApp agent is running for this deployment, so there is nothing to hold the connection. An admin needs to start the agent once — after that this button works for everyone.',
+      };
+    }
+
+    return { step: 'ready', phone, agentAdopted: link.agentAdopted };
   } catch (e) {
     return { error: (e as Error).message };
   }
@@ -124,6 +146,10 @@ export async function unlinkWhatsApp(): Promise<void> {
   if (!user) return;
 
   await revokeRelay(user.id);
+
+  // Tell the hosted agent to drop its WhatsApp session too, and leave a marker
+  // so its next poll can see this was deliberate rather than a bad token.
+  await revokeAgent(user.id);
 
   // Anything mid-flight is cancelled, so the relay cannot deliver a message
   // moments after the user disconnected.

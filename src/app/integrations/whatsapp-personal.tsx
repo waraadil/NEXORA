@@ -1,6 +1,7 @@
 'use client';
 
 import { useActionState, useEffect, useState, useTransition } from 'react';
+import { useRouter } from 'next/navigation';
 import { useFormStatus } from 'react-dom';
 import { Button } from '@/components/ui/button';
 import { Field, Input, Textarea } from '@/components/ui/field';
@@ -19,9 +20,9 @@ import {
 /**
  * "Link your personal WhatsApp" — the guided flow.
  *
- * The whole point is that the user does not need to understand a bridge, a
- * token, or an endpoint. They type their number, copy one command, and are
- * live. Everything technical is behind the disclosure at the bottom.
+ * The whole point is that the user does not need to understand a socket, a
+ * token, or an endpoint. They type their number, type the code that appears in
+ * the app into WhatsApp, and are live. The command line is gone entirely.
  */
 
 export type RelayView = {
@@ -33,6 +34,8 @@ export type RelayView = {
   pairingExpiresAt: string | null;
   /** Decrypted for the authenticated owner only; null once revoked. */
   relayKey: string | null;
+  /** The code WhatsApp issued, shown in the app so nothing is typed in a terminal. */
+  pairingCode: string | null;
   lastError: string | null;
   autoReplyEnabled: boolean;
   requireApproval: boolean;
@@ -93,12 +96,10 @@ export function WhatsappPersonal({
   relay,
   drafts,
   baseUrl,
-  relayRef,
 }: {
   relay: RelayView;
   drafts: DraftRow[];
   baseUrl: string;
-  relayRef: string;
 }) {
   const [stage, setStage] = useState<'closed' | 'details' | 'consent'>('closed');
 
@@ -141,21 +142,25 @@ export function WhatsappPersonal({
     setTimeout(() => setCopied(null), 2000);
   };
 
-  // Built from server state every render. A one-shot action result is lost on
-  // any remount (including React's own after an action), which stranded users
-  // mid-pairing with no command to run.
-  //
-  // One line, no npm login, no global install: the launcher downloads itself
-  // and its dependencies into ~/.nexora-relay on first run.
-  const launcherUrl = `https://raw.githubusercontent.com/waraadil/NEXORA/${relayRef}/relay/nexora-relay.mjs`;
+  // Nothing to paste and nothing to run: the agent posts the code back and the
+  // page re-renders with it. There is deliberately no command on this screen.
+  const pairingCode = relay.pairingCode;
 
-  // Download, then run the file. `eval` cannot execute module syntax, and
-  // ES modules are the only sane format for this launcher.
-  const bootstrap = `node -e "const f=require('os').tmpdir()+'/nexora-relay.mjs';require('https').get('${launcherUrl}',r=>{if(r.statusCode!==200)throw new Error('download failed: HTTP '+r.statusCode);const s=require('fs').createWriteStream(f);r.pipe(s);s.on('finish',()=>require('child_process').spawn(process.execPath,[f],{stdio:'inherit'}).on('exit',c=>process.exit(c||0)))})"`;
-
-  const command = relay.relayKey
-    ? `NEXORA_URL=${baseUrl} NEXORA_PAIRING_CODE=${relay.relayKey} ${bootstrap}`
-    : `NEXORA_URL=${baseUrl} NEXORA_PAIRING_CODE=<your key> ${bootstrap}`;
+  // The agent issues the code a moment or two after the claim is written, so
+  // the page has to look for it. Without this the card sits on the spinner
+  // until the user happens to press something — which is exactly the "it's
+  // stuck" feeling this flow exists to remove.
+  const router = useRouter();
+  useEffect(() => {
+    if (!waiting) return;
+    const tick = () => router.refresh();
+    const first = setTimeout(tick, 1200);
+    const every = setInterval(tick, 2500);
+    return () => {
+      clearTimeout(first);
+      clearInterval(every);
+    };
+  }, [waiting, router]);
 
   // ── Live ────────────────────────────────────────────────────────────────
   if (live) {
@@ -227,20 +232,16 @@ export function WhatsappPersonal({
 
         <details className="group rounded-xl border border-border bg-surface/60 p-4">
           <summary className="cursor-pointer list-none text-sm font-medium text-muted-foreground transition-colors hover:text-foreground">
-            Running the relay — what to do if you restart your computer
+            What keeps this connected?
           </summary>
           <div className="mt-3 space-y-2 text-sm text-muted-foreground">
             <p>
-              The relay runs in the terminal window you opened. Close it and messages stop arriving —
-              NEXORA shows this page honestly, it does not pretend otherwise. Start it again with the
-              same command and it reconnects without re-pairing.
+              The WhatsApp connection is held by a small always-on agent, not by your browser or your
+              phone. Nothing on your side needs to stay open.
             </p>
-            <pre className="overflow-x-auto rounded-lg bg-muted p-2.5 font-mono text-[11px] text-foreground">
-{`NEXORA_URL=${baseUrl} NEXORA_PAIRING_CODE=${relay.relayKey ?? '<your key>'} ${bootstrap}`}
-            </pre>
             <p>
-              Your pairing key is stored on this device only. If you have lost it, disconnect here and
-              pair again — it takes a minute.
+              Nothing on your side needs to stay open. If the agent itself stops, this card turns
+              amber within three minutes rather than claiming to be connected.
             </p>
           </div>
         </details>
@@ -248,95 +249,124 @@ export function WhatsappPersonal({
     );
   }
 
-  // ── Waiting for the relay ───────────────────────────────────────────────
+  // ── Pairing in progress: the code appears HERE ──────────────────────────
+  //
+  // No command, no terminal. The always-on agent asks WhatsApp for the code and
+  // posts it back, so it renders right here and auto-refreshes until the link
+  // comes up.
   if (waiting) {
     return (
       <div className="space-y-4">
         <Card>
           <CardHeader>
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <CardTitle>Finish linking</CardTitle>
+              <CardTitle>Enter this code in WhatsApp</CardTitle>
               {secondsLeft !== null && (
                 <Badge tone={secondsLeft > 60 ? 'primary' : 'warning'}>
-                  {secondsLeft > 0 ? `${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, '0')} left` : 'expired'}
+                  {secondsLeft > 0
+                    ? `${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, '0')} left`
+                    : 'expired'}
                 </Badge>
               )}
             </div>
             <CardDescription>
-              One copy-paste on your computer. The window below does the pairing for you.
+              Pairing {relay.pairingPhone ? `+${relay.pairingPhone}` : 'your number'} as a linked device,
+              like WhatsApp Web. Your phone keeps working normally.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <Steps current={2} />
 
-            <div className="space-y-1.5">
-              <p className="text-sm font-medium">1. Copy this into a terminal</p>
-              <div className="flex items-start gap-2">
-                <code className="min-w-0 flex-1 break-all rounded-lg border border-border bg-ink/60 p-3 font-mono text-[11px] leading-relaxed text-foreground">
-                  {command}
-                </code>
+            <div className="rounded-xl border border-primary/25 bg-primary/5 p-4">
+              {pairingCode ? (
+                <>
+                  <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                    Your pairing code
+                  </p>
+                  <div className="mt-2 flex flex-wrap items-center gap-3">
+                    <p className="font-mono text-3xl font-semibold tracking-[0.18em] text-foreground">
+                      {pairingCode}
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => copy(pairingCode, 'code')}
+                    >
+                      {copied === 'code' ? 'Copied' : 'Copy'}
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <div className="flex items-center gap-3">
+                  <span className="size-4 shrink-0 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
+                  <p className="text-sm text-foreground">
+                    Generating your code… this usually takes a few seconds.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <ol className="space-y-1.5 text-sm text-muted-foreground">
+              <li>
+                <span className="font-medium text-foreground">1.</span> On your phone open WhatsApp
+              </li>
+              <li>
+                <span className="font-medium text-foreground">2.</span> Settings → Linked devices →
+                Link a device → <span className="text-foreground">Link with phone number</span>
+              </li>
+              <li>
+                <span className="font-medium text-foreground">3.</span> Type the code above
+              </li>
+            </ol>
+
+            <div className="rounded-lg border border-border bg-surface-2 p-3 text-sm text-muted-foreground">
+              <p>
+                This page updates by itself — you don’t need to refresh or press anything. Messages
+                start arriving as soon as the code is accepted.
+              </p>
+              <div className="mt-2 flex items-center gap-3">
                 <Button
                   type="button"
-                  variant="outline"
+                  variant="ghost"
                   size="sm"
-                  onClick={() => copy(command, 'cmd')}
-                  className="shrink-0"
+                  isLoading={checking}
+                  onClick={() =>
+                    startChecking(async () => {
+                      const result = await confirmPairing();
+                      if (result?.error) setCheckNote(result.error);
+                    })
+                  }
                 >
-                  {copied === 'cmd' ? 'Copied' : 'Copy'}
+                  Check now
                 </Button>
+                {checkNote && <span className="text-xs">{checkNote}</span>}
               </div>
-              <p className="text-xs text-muted-foreground">
-                Needs Node 20+. It installs in about a minute, then prints a pairing code.
-              </p>
             </div>
-
-            <div className="space-y-1.5">
-              <p className="text-sm font-medium">2. Enter the code it prints</p>
-              <p className="text-sm text-muted-foreground text-pretty">
-                On your phone: <span className="text-foreground">WhatsApp → Settings → Linked devices → Link a device → Link with phone number</span>, then type the 8 characters from the terminal. That is the whole pairing — a linked device, like WhatsApp Web.
-              </p>
-            </div>
-
-            <div className="rounded-lg border border-primary/25 bg-primary/5 p-3">
-              <p className="text-sm text-foreground">
-                This page updates by itself when the link comes up. Keep it open.
-              </p>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="mt-2"
-                isLoading={checking}
-                onClick={() =>
-                  startChecking(async () => {
-                    const result = await confirmPairing();
-                    setCheckNote(result?.error ?? 'Still waiting for the relay…');
-                  })
-                }
-              >
-                Check now
-              </Button>
-              {checkNote && <p className="mt-2 text-xs text-muted-foreground">{checkNote}</p>}
-            </div>
-
-            {relay.relayKey && (
-              <details className="rounded-lg border border-border bg-surface-2 p-3">
-                <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">
-                  Your pairing key (only if you need to re-run the command)
-                </summary>
-                <div className="mt-2 flex items-start gap-2">
-                  <code className="min-w-0 flex-1 break-all font-mono text-[11px]">{relay.relayKey}</code>
-                  <Button type="button" variant="ghost" size="sm" onClick={() => copy(relay.relayKey!, 'key')}>
-                    {copied === 'key' ? 'Copied' : 'Copy'}
-                  </Button>
-                </div>
-                <p className="mt-1.5 text-[11px] text-muted-foreground">
-                  Treat it like a password: anyone with it can read WhatsApp under your account.
-                </p>
-              </details>
-            )}
           </CardContent>
         </Card>
+
+        {/* The old manual path stays, but it is no longer the way in. */}
+        <details className="rounded-xl border border-border bg-surface/60 p-4">
+          <summary className="cursor-pointer list-none text-sm font-medium text-muted-foreground hover:text-foreground">
+            Advanced: run the agent yourself
+          </summary>
+          <div className="mt-3 space-y-2 text-sm text-muted-foreground">
+            <p>
+              Only needed if you are hosting NEXORA yourself and no agent is running. Put this on any
+              always-on machine; it holds the WhatsApp connection and needs no open ports.
+            </p>
+            <pre className="overflow-x-auto rounded-lg bg-muted p-2.5 font-mono text-[11px] text-foreground">
+{`NEXORA_URL=${baseUrl} \
+NEXORA_AGENT_SECRET=<your secret> \
+node relay/agent.mjs`}
+            </pre>
+            <p>
+              WhatsApp will then show a code in the agent’s log instead of here. Everything else —
+              messages, auto-reply, disconnect — is identical.
+            </p>
+          </div>
+        </details>
       </div>
     );
   }
