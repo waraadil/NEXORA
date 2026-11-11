@@ -198,39 +198,37 @@ I can wire this for you if you give me the SMTP details.
 
 ---
 
-## 6. Deploy — one step left, and it needs a token
+## 6. Deploy — DONE ✅
 
-**Already done for you:**
+**Live at https://nexora-zeta-red.vercel.app**
 
-- Vercel project **`nexora`** created (`prj_1t3juMPBM7FwGRZtcNZ6ievuACql`, team `qss2`).
-- All five environment variables are set for production, preview and development —
-  including a **freshly generated** `NEXORA_ENCRYPTION_KEY` that is different from your
-  local dev key (correct: rotating the master key per environment is deliberate).
-- The code is committed in `/home/user/nexora` with the GitHub remote
-  `https://github.com/waraadil/Moti-Ai.git` already configured.
+Verified from outside the sandbox:
 
-**The one thing I cannot do:** push the code. The Vercel connection can create a project
-and set variables, but it cannot upload a directory tree, and I have no GitHub credential.
-Two ways to finish — either works:
+| Check | Result |
+|---|---|
+| `GET /` | **HTTP 200**, title "NEXORA — Your conversations. Your intelligence. Your AI." |
+| `GET /dashboard` while signed out | **307 → `/login?next=/dashboard`** (middleware guard working) |
+| Supabase auth from production | **HTTP 200**, real token issued for the demo account |
+| Build | **READY in 41s**, 4 serverless functions (turbopack) |
 
-**A. Push it yourself (30 seconds).** In this workspace the repo is already committed:
+GitHub: https://github.com/waraadil/NEXORA (4 commits, 122 files, no secrets)
 
-```bash
-cd /home/user/nexora
-git push -u origin main
-```
+### What was configured
 
-Vercel's `nexora` project is not yet linked to that repo, so either link it in the
-Vercel dashboard (Settings → Git → Connect Repository), or from Vercel's one-click
-import. Every push to `main` then deploys.
+- Vercel project `nexora`, linked to `waraadil/NEXORA`, production branch `main`.
+- All six env vars set for production, preview and development, including a
+  **fresh** `NEXORA_ENCRYPTION_KEY` distinct from the dev key.
+- `NEXT_PUBLIC_APP_URL` = the production alias above.
+- Every push to `main` now deploys automatically.
 
-**B. Give me a GitHub token** (fine-grained, `contents:write` on `Moti-Ai`) and I will
-push and watch the deploy to completion.
+### Still worth doing (2 minutes)
 
-**After the first successful deploy**, add the Vercel domain to
-**Supabase → Authentication → URL Configuration** (both Site URL and the redirect
-allow-list). `*.vercel.app` is already allow-listed, so a preview URL usually works
-without this. Then set `NEXT_PUBLIC_APP_URL` in Vercel to the real domain.
+1. **Rotate the GitHub token** — revoke `NEXORA deploy` at
+   github.com/settings/personal-access-tokens. It was pasted in chat.
+2. **Add the domain to Supabase** → Authentication → URL Configuration, so
+   magic-link and OAuth redirects land on the Vercel domain instead of localhost.
+   Set Site URL to `https://nexora-zeta-red.vercel.app`.
+3. **Rotate the Google API key** used during testing — it is also in the chat log.
 
 ---
 
