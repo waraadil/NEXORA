@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { requireOnboardedUser } from '@/lib/auth/guard';
 import { AppShell } from '@/components/app-shell';
+import { getAppUrl } from '@/lib/app-url';
 import { IntegrationsClient } from './integrations-client';
 
 export const metadata: Metadata = { title: 'Integrations' };
@@ -40,7 +41,7 @@ export default async function IntegrationsPage() {
         integration={integration ?? null}
         cloudConversations={cloudCount ?? 0}
         bridgeConversations={bridgeCount ?? 0}
-        appUrl={process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}
+        appUrl={getAppUrl()}
       />
     </AppShell>
   );

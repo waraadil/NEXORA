@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
+import { getAppUrl } from '@/lib/app-url';
 
 export type AuthState = { error?: string; success?: string; fieldErrors?: Record<string, string> } | null;
 
@@ -13,16 +14,14 @@ const passwordSchema = z
   .min(8, 'Use at least 8 characters')
   .max(72, 'Password is too long');
 
-function appUrl() {
-  return process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
-}
+// getAppUrl() never hands out localhost from a deployed build.
 
 export async function signInWithGoogle(): Promise<void> {
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {
-      redirectTo: `${appUrl()}/auth/callback`,
+      redirectTo: `${getAppUrl()}/auth/callback`,
       queryParams: { access_type: 'offline', prompt: 'consent' },
     },
   });
@@ -120,7 +119,7 @@ export async function signUpWithEmail(
     email: parsed.data.email,
     password: parsed.data.password,
     options: {
-      emailRedirectTo: `${appUrl()}/auth/callback`,
+      emailRedirectTo: `${getAppUrl()}/auth/callback`,
       data: { full_name: parsed.data.displayName || null },
     },
   });
@@ -154,7 +153,7 @@ export async function requestPasswordReset(
 
   const supabase = await createSupabaseServerClient();
   await supabase.auth.resetPasswordForEmail(parsed.data, {
-    redirectTo: `${appUrl()}/auth/callback?next=/settings/security`,
+    redirectTo: `${getAppUrl()}/auth/callback?next=/settings/security`,
   });
 
   // Always report success — do not leak which emails are registered.

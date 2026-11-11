@@ -259,6 +259,35 @@ generated drafts through the real Gemini API:
 Send stays disabled with *"no WhatsApp channel is connected"* — correct, honest
 behaviour rather than a silent no-op.
 
+### Every route — audited in a real browser
+
+Signed in as the demo user and walked the whole app. 27 checks pass:
+
+| Area | What was exercised |
+|---|---|
+| Landing | hero, 6 feature cards, 3 steps, CTAs, "Get started" → `/signup` |
+| Auth | wrong password rejected with a visible error, correct password signs in |
+| Sidebar | all 7 items navigate to the right route |
+| Dashboard | live counts (4/4/63/14), recent conversations, setup checklist |
+| Conversations | list → detail, full transcript renders |
+| Contacts | list → detail |
+| Memory | renders with provenance, search filters to the matching row |
+| AI Assistant | real Gemini call, 3 drafts in ~29s |
+| Settings | profile form, AI provider shows key tail + verified status |
+| Away Mode | settings form, per-contact rules, draft generation |
+| Integrations | two WhatsApp modes, webhook URL |
+| Chrome | ⌘K palette opens and filters, theme toggle switches mode |
+
+Two real bugs were found and fixed in the process:
+
+1. **`src/app/page.tsx` was the untouched `create-next-app` template.** The
+   homepage showed "To get started, edit the page.tsx file" to every visitor.
+   Replaced with a real landing page that redirects signed-in users to
+   `/dashboard`.
+2. **`/forgot-password` rendered a form that could never send.** There is no SMTP
+   provider, so the reset email was silently discarded. The page now explains
+   that resets are unavailable and points at the two paths that work.
+
 ### Auth wiring — verified state
 
 | Setting | Value |
