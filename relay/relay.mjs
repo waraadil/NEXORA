@@ -17,7 +17,7 @@
  * ~/.nexora-relay/auth and go nowhere except WhatsApp's own servers.
  *
  * ── Setup ────────────────────────────────────────────────────────────────
- *   npx github:waraadil/nexora-relay
+ *   Use the command NEXORA generates — it carries your URL and pairing key.
  *
  * You will be asked for the pairing code shown in NEXORA → Integrations.
  * Keep the window open. Closing it stops sync; reopen it and it resumes.
