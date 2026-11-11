@@ -225,10 +225,35 @@ GitHub: https://github.com/waraadil/NEXORA (4 commits, 122 files, no secrets)
 
 1. **Rotate the GitHub token** — revoke `NEXORA deploy` at
    github.com/settings/personal-access-tokens. It was pasted in chat.
-2. **Add the domain to Supabase** → Authentication → URL Configuration, so
-   magic-link and OAuth redirects land on the Vercel domain instead of localhost.
-   Set Site URL to `https://nexora-zeta-red.vercel.app`.
+2. ~~Add the domain to Supabase~~ — **done.** `site_url` is
+   `https://nexora-zeta-red.vercel.app` and the allow-list covers the production
+   alias, branch alias, `localhost:3000-3001`, and the `*.vercel.app` /
+   `*.e2b.app` wildcards. Verified: hitting `/auth/v1/authorize?provider=google`
+   with the production redirect returns a Google consent URL carrying
+   `redirect_to=https://nexora-zeta-red.vercel.app/auth/...`.
 3. **Rotate the Google API key** used during testing — it is also in the chat log.
+
+### Auth wiring — verified state
+
+| Setting | Value |
+|---|---|
+| Site URL | `https://nexora-zeta-red.vercel.app` |
+| Redirect allow-list | production alias, branch alias, localhost:3000-3001, `*.vercel.app/**`, `*.e2b.app/**` |
+| Google OAuth | **enabled** — consent URL resolves with the production redirect |
+| Email/password | **enabled**, autoconfirm on |
+| Password sign-in from prod | HTTP 200, real token issued |
+
+**One gap that is not a bug:** no SMTP provider is configured, so all auth emails
+go through Supabase's built-in sender — roughly 2 per hour, frequently
+spam-foldered. Password sign-in is unaffected. If you want reliable
+magic-link / password-reset / email-confirmation delivery, add SMTP in
+Supabase → Authentication → SMTP (Resend, Postmark, SES — all have free tiers),
+and the existing templates will work unchanged.
+
+**Note on `demo@nexora.app`:** `.app` is a real TLD, so Supabase rejects that
+address for recovery flows ("Email address is invalid"). It was fine for
+sign-in testing but cannot receive mail. Use a real address for any account you
+intend to keep.
 
 ---
 
