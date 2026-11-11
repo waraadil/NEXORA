@@ -136,10 +136,39 @@ when no send path exists; the personal bridge is import-only by design and says 
 - Conversations list now shows a last-message preview and provenance labels that
   say where a thread came from instead of implying an account type.
 - **No dead OAuth button:** the Google button only renders when Supabase reports
-  the provider as enabled. On this deployment it is off, so the page says so.
+  the provider as enabled. Google is now enabled on this project and the button
+  is live — the test asserts whichever state Supabase reports rather than
+  hardcoding an assumption.
 
-### 🚧 Not yet built
-- Vercel deployment (deliberately on hold until the build is complete)
+### ✅ Proven against a live model
+
+Every AI path was executed for real against Google's API, not simulated. What
+that exercise found and fixed — each of these was a genuine defect:
+
+| Found | Fix |
+|---|---|
+| Gemini 3.x returned **empty text** with `finishReason: STOP` | `thinkingConfig.thinkingBudget` — the thought budget was consuming `maxOutputTokens`. Load-bearing: without it `text=""`, with it text is produced. |
+| A 429 told users **"top up your provider"** when they had simply hit a free-tier daily cap | Error classifier now distinguishes free-tier limits, names the reset time, and suggests another model instead of a purchase. |
+| One malformed date (`"2025-02"`) **failed an entire memory batch** | Tolerant date normaliser + per-row fallback; one bad row can no longer discard the rest. |
+| Memories filled with **paraphrases of one fact** | Jaccard near-duplicate suppression before insert. |
+| Every memory scored **100% confidence** and event dates landed in the **past** | Prompt now receives today's date, resolves relative dates forward, and calibrates confidence. Dates moved from `2025-05-18` to `2026-11-15`; confidence now spreads 0.70–0.95. |
+| The model **certified its own memories as "confirmed"** | Provenance is forced to `inferred` in code. Only the user can confirm, via `/memory`. |
+| Reply generation pulled the **oldest** 200 messages | Most-recent 120, then re-sorted chronologically — in a long thread the model previously never saw the message it was replying to. |
+| One insert **per memory** | Single batched insert; falls back to per-row only on conflict. |
+| Transient 5xx / timeouts surfaced as **"Unexpected error"** | Retry with backoff on transient kinds only; network and timeout errors are now classified. |
+| The conversation selector **silently reset** after generating, so the drafts on screen belonged to someone else | React 19 resets form fields after an action; the select is keyed on the effective value so the control cannot contradict the drafts. |
+
+Measured: chat p50 **553 ms** (range 332 ms – 2.3 s), embeddings **180 ms**.
+Verified output on the demo thread — drafts came back as
+*"whatever, just bring him along if i want to judge him properly"*, referencing
+"the darkroom guy" from that specific conversation, in the learned lowercase voice.
+
+### 🚧 Deployment
+
+Vercel project `nexora` exists with all environment variables set and a fresh
+production encryption key. The build is committed and ready. **Pushing the code
+is the one remaining step** — it needs a credential this session does not have.
+See SETUP.md §6.
 
 ## The WhatsApp reality
 
@@ -198,6 +227,7 @@ npm run dev          # http://localhost:3000
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | public | Safe — RLS enforces isolation |
 | `SUPABASE_SERVICE_ROLE_KEY` | **server-only** | Bypasses RLS; never import client-side |
 | `NEXORA_ENCRYPTION_KEY` | **server-only** | 32-byte AES master key. Rotating invalidates stored credentials |
+| `GEMINI_API_KEY` | **local test only** | Used exclusively by `scripts/test-provider-live.mjs`. The app never reads it — real AI keys are per-user and encrypted in the database |
 
 ### Tests
 
@@ -210,12 +240,26 @@ node scripts/test-column-lockdown.mjs # 8 — secret columns unreadable by a rea
 node scripts/test-semantic.mjs        # 10 — pgvector round-trip, isolation, threshold
 node scripts/test-auth-e2e.mjs        # 27 — real login, all pages, search, onboarding gate
 node scripts/test-ui.mjs              # 27 — palette, theme, 404, a11y, mobile nav
-node scripts/test-auth-pages.mjs      # 15 — no dead OAuth button, callback guards
+node scripts/test-auth-pages.mjs      # 17 — OAuth button state, callback guards
+
+# Live model suites — these call Google for real and cost tokens.
+GEMINI_API_KEY=... npx tsx --conditions=react-server \
+  --import ./scripts/server-only-stub.mjs scripts/test-provider-live.mjs
+                                      # 21 — key, chat, thinking regression,
+                                      #      embeddings, style, replies,
+                                      #      memories, semantic search
+
 node scripts/screenshot.mjs           # 17 screenshots, light + dark + mobile
 ```
 
-All suites pass against the live Supabase project. Latest run: **27 / 27**,
-**27 / 27**, **15 / 15**, **10 / 10**, **8 / 8**, parser **15 / 15**.
+`--conditions=react-server` is what lets a Node script import modules that carry
+`import 'server-only'`. It resolves the package's `empty.js` branch instead of the
+file that throws. The guard is never weakened — TypeScript files stay untouched.
+
+All suites pass against the live Supabase project and a live Google key.
+Latest run: **27 / 27** auth, **27 / 27** UI, **17 / 17** auth pages,
+**21 / 21** live provider, **10 / 10** semantic, **8 / 8** lockdown,
+**15 / 15** parser — **125 assertions, 0 failures**.
 
 ---
 

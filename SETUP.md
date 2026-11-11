@@ -198,24 +198,39 @@ I can wire this for you if you give me the SMTP details.
 
 ---
 
-## 6. Deploy (when you're ready)
+## 6. Deploy — one step left, and it needs a token
 
-You said to hold off until the build is 100%, so this is last. When you're ready:
+**Already done for you:**
 
-1. Push the repo to GitHub.
-2. Import it in Vercel as a Next.js project.
-3. Add these environment variables (copy from `.env.local`):
-   ```
-   NEXT_PUBLIC_SUPABASE_URL
-   NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
-   NEXT_PUBLIC_SUPABASE_ANON_KEY
-   SUPABASE_SERVICE_ROLE_KEY
-   NEXORA_ENCRYPTION_KEY      ← generate a NEW one, don't reuse the dev key
-   NEXT_PUBLIC_APP_URL        ← https://your-app.vercel.app
-   ```
-4. After the first deploy, add the Vercel domain to
-   **Supabase → Authentication → URL Configuration** (both Site URL and redirect allow-list).
-   `*.vercel.app` is already allow-listed, so this may just work.
+- Vercel project **`nexora`** created (`prj_1t3juMPBM7FwGRZtcNZ6ievuACql`, team `qss2`).
+- All five environment variables are set for production, preview and development —
+  including a **freshly generated** `NEXORA_ENCRYPTION_KEY` that is different from your
+  local dev key (correct: rotating the master key per environment is deliberate).
+- The code is committed in `/home/user/nexora` with the GitHub remote
+  `https://github.com/waraadil/Moti-Ai.git` already configured.
+
+**The one thing I cannot do:** push the code. The Vercel connection can create a project
+and set variables, but it cannot upload a directory tree, and I have no GitHub credential.
+Two ways to finish — either works:
+
+**A. Push it yourself (30 seconds).** In this workspace the repo is already committed:
+
+```bash
+cd /home/user/nexora
+git push -u origin main
+```
+
+Vercel's `nexora` project is not yet linked to that repo, so either link it in the
+Vercel dashboard (Settings → Git → Connect Repository), or from Vercel's one-click
+import. Every push to `main` then deploys.
+
+**B. Give me a GitHub token** (fine-grained, `contents:write` on `Moti-Ai`) and I will
+push and watch the deploy to completion.
+
+**After the first successful deploy**, add the Vercel domain to
+**Supabase → Authentication → URL Configuration** (both Site URL and the redirect
+allow-list). `*.vercel.app` is already allow-listed, so a preview URL usually works
+without this. Then set `NEXT_PUBLIC_APP_URL` in Vercel to the real domain.
 
 ---
 
