@@ -14,11 +14,10 @@
  *      type in NEXORA) and sends them from your own WhatsApp.
  *
  * Everything runs on this machine. Your session credentials are written to
- * ./auth and go nowhere except WhatsApp's own servers.
+ * ~/.nexora-relay/auth and go nowhere except WhatsApp's own servers.
  *
  * ── Setup ────────────────────────────────────────────────────────────────
- *   mkdir nexora-relay && cd nexora-relay
- *   npx @nexora/relay                 # or: node relay.mjs
+ *   npx github:waraadil/nexora-relay
  *
  * You will be asked for the pairing code shown in NEXORA → Integrations.
  * Keep the window open. Closing it stops sync; reopen it and it resumes.
@@ -29,6 +28,7 @@
 
 import { rm, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import readline from 'node:readline/promises';
 import makeWASocket, {
@@ -44,7 +44,10 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const AUTH_DIR = process.env.NEXORA_AUTH_DIR || join(HERE, 'auth');
+// Deliberately NOT next to the script: under `npx` the package sits in a
+// temporary cache npm may clear, which would silently log the user out.
+// ~/.nexora-relay survives that, survives moving the script, and is private.
+const AUTH_DIR = process.env.NEXORA_AUTH_DIR || join(homedir(), '.nexora-relay', 'auth');
 
 const BASE = (process.env.NEXORA_URL || '').replace(/\/+$/, '');
 const PAIRING_CODE = process.env.NEXORA_PAIRING_CODE || '';
