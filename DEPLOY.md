@@ -18,7 +18,12 @@ GET https://nexora-zeta-red.vercel.app/api/whatsapp/agent/wake
 `NEXORA_AGENT_URL` and `NEXORA_AGENT_SECRET` are set on the Vercel project and a
 deployment carrying them is live. The Render secret was verified against the
 service before being stored (a wrong secret answers `401 bad secret`; the one now
-in Vercel is accepted). All that is left is for you to pair a number.
+in Vercel is accepted).
+
+A real pairing was then driven through the live site against the live agent and
+worked first time — the code appeared in the page in 16 seconds, the database
+stored it, and the agent reported holding the same link. All that is left is for
+you to do it with your own number.
 
 ---
 
@@ -27,7 +32,8 @@ in Vercel is accepted). All that is left is for you to pair a number.
 | Area | State |
 | --- | --- |
 | Import your own `WhatsApp Chat with …txt` | works in production |
-| Live WhatsApp link, pairing, messages, AI replies, approval, disconnect | **46/46 on production** (+2 checks that need an agent) |
+| Live WhatsApp link → real code in the live page, against the live agent | **verified 2026-11-12** (`CMYV-JB7E`, 16s, no JS errors) |
+| Relay HTTP path (no agent attached) | 46/46 locally (+2 agent-only skips) |
 | Hosted-agent contract (token upgrade, reply round trip, revoke) | 19/19 |
 | Resume after a diskless restart | 16/16 |
 | Pairing with nothing typed in a terminal | 9/9, real browser + real agent + real WhatsApp code |
