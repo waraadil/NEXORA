@@ -177,6 +177,33 @@ try {
     ? no('called a never-started pairing expired')
     : ok('does not invent an expiry');
 
+  // ── The case that made the button look dead ──────────────────────────────
+  // A pairing has just started: the session state is 'pairing' and a real code
+  // is stored, but the row's status still reads 'disabled' from its earlier
+  // life. The page used to short-circuit on 'disabled' and render the
+  // first-time card, so the code was fetched, stored, and never shown — the user
+  // pressed the button and appeared to get nothing back. Session state is the
+  // more specific signal and must win.
+  console.log('\n[6. A live pairing behind a stale disabled status]');
+  await seed({
+    sessionState: 'pairing',
+    pairingMinutesAgo: 1,
+    code: 'ABCD-1234',
+    status: 'disabled',
+  });
+  await page.goto(`${BASE}/integrations`, { waitUntil: 'domcontentloaded' });
+  await page.getByText(/Enter this code in WhatsApp/i).waitFor({ timeout: 20000 }).catch(() => {});
+  await page.waitForTimeout(1200);
+  (await has(/Enter this code in WhatsApp/i))
+    ? ok('a live pairing is shown even when status says disabled')
+    : no('hid a live pairing behind a stale status', (await bodyText()).slice(0, 200).replace(/\s+/g, ' '));
+  (await has(/ABCD-1234/))
+    ? ok('and the code it already has is on the page')
+    : no('did not show the stored code');
+  (await has(/Get started/) && !(await has(/Enter this code/i)))
+    ? no('offered Get started while a pairing was live')
+    : ok('does not offer to start over while it is live');
+
   jsErrors.length === 0 ? ok('no JS errors') : no('JS errors', jsErrors.join(' | '));
 } catch (e) {
   no('crashed', e.message);

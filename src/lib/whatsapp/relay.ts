@@ -359,7 +359,16 @@ export function storedToUiStatus(
   status: string | null,
   sessionState: string | null,
 ): RelayState['status'] {
-  if (status === 'disabled') return 'unpaired';
+  // The SESSION state is the more specific signal and it wins.
+  //
+  // `disabled` used to short-circuit everything, on the reasoning that a disabled
+  // integration is switched off. But a pairing that has just started writes
+  // `bridge_session_state='pairing'` while `status` can still read `disabled`
+  // from the row's earlier life — nothing resets it to pending on every path.
+  // The page then showed "Get started" while a real pairing was in flight: the
+  // code was being fetched and stored, and the card that would have displayed it
+  // never rendered. That is a button press that appears to do nothing, which is
+  // exactly what was reported.
   switch (sessionState) {
     case 'connected':
       return 'live';
@@ -370,8 +379,10 @@ export function storedToUiStatus(
     case 'unpaired':
       return 'unpaired';
     default:
-      return status === 'connected' ? 'live' : 'unpaired';
+      break;
   }
+  if (status === 'disabled') return 'unpaired';
+  return status === 'connected' ? 'live' : 'unpaired';
 }
 
 /** What the relay may report as its own state. */
