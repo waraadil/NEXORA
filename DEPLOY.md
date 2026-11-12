@@ -1,12 +1,24 @@
-# Where NEXORA stands, and the one step left
+# Where NEXORA stands, and how to pair your number
 
-Everything the app promises now runs for real. The only thing between you and a
-working WhatsApp link is hosting one small process — the agent — because Vercel
-can't hold a WhatsApp socket open.
+Everything the app promises now runs for real, on free tiers, with nothing for
+you to install or run.
 
 **It costs $0.** Render's free tier is enough now: the agent carries nothing on
 its disk, so it comes back linked after a free instance sleeps or restarts. No
 Starter plan, no card.
+
+**The agent is deployed and wired.** `https://nexora-whatsapp-agent.onrender.com`
+answers `/health`, and production reaches it:
+
+```
+GET https://nexora-zeta-red.vercel.app/api/whatsapp/agent/wake
+→ {"ok":true,"links":0,"ms":305}
+```
+
+`NEXORA_AGENT_URL` and `NEXORA_AGENT_SECRET` are set on the Vercel project and a
+deployment carrying them is live. The Render secret was verified against the
+service before being stored (a wrong secret answers `401 bad secret`; the one now
+in Vercel is accepted). All that is left is for you to pair a number.
 
 ---
 
@@ -56,39 +68,24 @@ in the flow — a test asserts exactly that.
 > the **root** of the repository, and it was in `relay/`. It is at the root now
 > (commit `1852890`), so **refresh the New → Blueprint page** and it will appear.
 
-## The one step left: host the agent (≈2 minutes, once)
+## Pair your number (about a minute, in the browser)
 
-### 1. Deploy the agent on Render
+1. Open **https://nexora-zeta-red.vercel.app/integrations**
+2. Press **Get started** under Personal WhatsApp
+3. Type your number with the country code (`91…` for India), tick the four
+   consent boxes, type `I understand the risks`
+4. Press **Create pairing code** — the code appears **in the page**
+5. On your phone: **WhatsApp → Linked devices → Link a device → Link with phone
+   number**, then type the code
 
-1. Open **https://dashboard.render.com/blueprints**
-2. Click **New Blueprint Instance**
-3. Choose the **NEXORA** repository (`waraadil/NEXORA`) and branch `main`
-4. Render reads `render.yaml` at the repository root: one **free** web service, no
-disk. Nothing to pay for, no card needed.
-5. Click **Apply** and wait for the first build (~2 minutes)
+The page flips to "linked" on its own. No terminal, no command, nothing to
+download.
 
-### 2. Copy two values from Render
+### If the agent was asleep
 
-- The service URL — like `https://nexora-whatsapp-agent.onrender.com`
-- **Environment → `NEXORA_AGENT_SECRET`** (Render generated it)
-
-### 3. Put them in Vercel
-
-Project `nexora` → **Settings → Environment Variables**:
-
-| Key | Value |
-| --- | --- |
-| `NEXORA_AGENT_URL` | the Render service URL |
-| `NEXORA_AGENT_SECRET` | the value Render generated |
-
-`NEXORA_AGENT_SECRET` is already there — check it matches Render's, and replace
-it if Render generated its own. Then redeploy (Git → Redeploy, or push anything).
-
-### 4. Send me the two values
-
-`NEXORA_AGENT_URL` and `NEXORA_AGENT_SECRET`, and I'll set them, redeploy, and
-verify the whole flow against production myself — including a real pairing code
-in the page.
+A free instance can be cold when you arrive, so the first press may take up to a
+minute while Render wakes it. The page says so rather than spinning forever —
+press it again if it times out.
 
 ### Why the free plan is now enough
 
@@ -101,13 +98,26 @@ That is proven by `scripts/test-agent-resume.mjs`, which deletes the agent's
 directory, restarts it with only `NEXORA_AGENT_TOKEN` in the environment, and
 asserts the link returns and the log says `↻ resuming …`.
 
-The one real limit left: a free instance sleeps after ~15 minutes with no
-inbound traffic, which drops the socket. `GET /api/whatsapp/agent/wake` exists
-to prevent exactly that — it pings the agent's `/health` and is safe for any
-caller to hit. `vercel.json` schedules it twice a day, which is **not** enough
-on its own (Vercel Hobby crons are daily-only). Until an external pinger runs
-every ~10 minutes, expect the agent to be asleep after 15 idle minutes and to
-wake on the next visit to the app.
+### Staying awake, without anything to run
+
+A free instance sleeps after ~15 minutes with no inbound traffic, which drops
+the socket. Three things keep it up, and none of them cost anything:
+
+1. **The agent pings itself.** `relay/agent.mjs` reads `RENDER_EXTERNAL_URL`
+   (injected by Render) and GETs its own `/health` every 10 minutes. Through
+   Render's proxy that is an ordinary inbound request, so it resets the idle
+   counter exactly like a visitor. Verified locally: 5 requests in 20 s at a 3 s
+   interval, every one landing on the listener.
+2. **`GET /api/whatsapp/agent/wake`** on the app pings the agent from outside,
+   and `vercel.json` schedules it twice a day as a backstop. Vercel Hobby crons
+   are daily-only, so this is a safety net, not the primary clock.
+3. **Every use of the app** touches the agent, so real usage keeps it warm.
+
+If Render ever stops counting its own outbound self-request as inbound traffic,
+the fallback is `pinger.mjs` — a dependency-free process you can run on any
+always-on box, or point a free cron service at
+`https://nexora-whatsapp-agent.onrender.com/health` every 10 minutes. It is not
+needed today.
 
 ---
 

@@ -559,7 +559,66 @@ const server = createServer(async (req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   log(`agent listening on :${PORT} — talking to ${BASE}`);
+  startSelfKeepAlive();
 });
+
+/**
+ * KEEP-ALIVE — the agent wakes itself up.
+ * ─────────────────────────────────────
+ * Render's free tier spins a web service down after ~15 minutes with no inbound
+ * request, which drops the WhatsApp socket. Something outside has to poke it,
+ * and every candidate had a catch: Vercel Hobby crons only run daily, GitHub
+ * Actions needs a workflow-scoped token, and an always-on pinger is the thing we
+ * cannot pay for.
+ *
+ * So it pokes itself. Render routes the public domain through its proxy, and a
+ * request to RENDER_EXTERNAL_URL (which Render injects) is an ordinary inbound
+ * request — it resets the idle timer exactly like a visitor would. Ten minutes
+ * is comfortably inside the fifteen-minute window, and the cost is one tiny
+ * GET per instance, not per user.
+ *
+ * Deliberately conservative:
+ *   • No-ops anywhere that is not Render, so a VPS or a laptop is unaffected.
+ *   • Interval can be raised or disabled with NEXORA_SELF_PING_SECONDS=0.
+ *   • Failure is logged once and retried next tick — a failed self-ping must
+ *     never take down a process that is otherwise holding live sessions.
+ */
+function startSelfKeepAlive() {
+  const external = (process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '');
+  const seconds = Number(process.env.NEXORA_SELF_PING_SECONDS ?? 600);
+
+  if (!external) return;
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    log('self keep-alive disabled (NEXORA_SELF_PING_SECONDS=0)');
+    return;
+  }
+
+  let warned = false;
+  const tick = async () => {
+    try {
+      const res = await fetch(`${external}/health`, {
+        signal: AbortSignal.timeout(20000),
+        headers: { 'user-agent': 'nexora-agent/self-keepalive' },
+      });
+      if (!res.ok && !warned) {
+        log(`self keep-alive: HTTP ${res.status} — will keep trying`);
+        warned = true;
+      } else if (res.ok) {
+        warned = false;
+      }
+    } catch (e) {
+      if (!warned) {
+        log(`self keep-alive failed (${e.message}) — will keep trying`);
+        warned = true;
+      }
+    }
+  };
+
+  log(`self keep-alive: pinging ${external}/health every ${seconds}s so the free instance never idles out`);
+  // First ping a minute in, so boot is not competing with itself for the CPU.
+  setTimeout(tick, 60_000);
+  setInterval(tick, seconds * 1000).unref?.();
+}
 
 /** Restore links that were alive before a restart, so nothing waits for a click. */
 async function restore() {

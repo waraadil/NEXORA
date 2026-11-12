@@ -11,9 +11,10 @@
 #
 # ── What you accept on the free tier ─────────────────────────────────────
 # Render spins a free service down after 15 minutes without inbound traffic.
-# This blueprint sets the keep-alive ON, which polls the agent every 10 minutes
-# from Render's own infrastructure — that keeps the 15-minute idle counter from
-# ever reaching zero, so the WhatsApp socket stays up around the clock.
+# The agent pings ITSELF every 10 minutes (relay/agent.mjs → startSelfKeepAlive)
+# through Render's public domain, which is an ordinary inbound request and resets
+# that counter. Nothing outside Render has to run: no external pinger, no cron
+# quota, no extra account.
 #
 # Free workspaces get 750 instance hours a month; a month is ~720-744, so one
 # always-on free service just fits. Render suspends free services for the rest
@@ -49,9 +50,12 @@ services:
         value: /tmp/nexora-agent
       - key: NEXORA_POLL_MS
         value: "3000"
-      # The keep-alive pings this path every 10 minutes so the service never
-      # reaches Render's 15-minute idle point.
-      - key: NEXORA_KEEPALIVE_PATH
-        value: /health
+      # How often the agent pings its own public URL. Must stay below Render's
+      # 15-minute idle threshold. Set to 0 to turn it off (e.g. on a paid plan,
+      # or on a VPS where it is pointless).
+      - key: NEXORA_SELF_PING_SECONDS
+        value: "600"
+      # RENDER_EXTERNAL_URL is injected by Render automatically — the agent uses
+      # it as the address to ping. No setting needed.
       - key: NODE_VERSION
         value: "22"
