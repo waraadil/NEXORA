@@ -1,6 +1,6 @@
 import 'server-only';
 import { createSupabaseAdminClient } from '@/lib/supabase/server';
-import { newClaimToken, CLAIM_TTL_MS } from './agent-auth';
+import { newClaimToken, CLAIM_TTL_MS, markPairingFailed } from './agent-auth';
 import { CONSENT_VERSION } from './bridge-risks';
 
 /**
@@ -112,15 +112,17 @@ export async function startAgentLink(params: {
     });
 
     if (!res.ok) {
-      return { ...base, error: `The agent refused the request (HTTP ${res.status}).` };
+      const message = `The WhatsApp agent refused the request (HTTP ${res.status}).`;
+      // Undo the claim we just wrote. Leaving it behind put the page into its
+      // "waiting" state with a spinner and no code coming — a silent failure.
+      await markPairingFailed(params.userId, message);
+      return { ...base, error: message };
     }
     return { ...base, agentAdopted: true };
   } catch (e) {
-    return {
-      ...base,
-      error:
-        'The WhatsApp agent did not answer. It may still be waking up — try again in a minute. ' +
-        (e as Error).message.slice(0, 120),
-    };
+    const message =
+      'The WhatsApp agent did not answer. It may still be waking up — try again in a minute.';
+    await markPairingFailed(params.userId, message);
+    return { ...base, error: `${message} (${(e as Error).message.slice(0, 120)})` };
   }
 }

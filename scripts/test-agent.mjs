@@ -186,7 +186,10 @@ try {
 }
 
 console.log(`\n${pass.length} passed, ${fail.length} failed`);
-if (fail.length) {
-  console.log('\nagent log tail:\n' + agentLog.slice(-800));
-  process.exit(1);
-}
+if (fail.length) console.log('\nagent log tail:\n' + agentLog.slice(-800));
+
+// The child must be gone before this process exits, otherwise the port stays
+// held and the next run's adopt is refused by the previous run's agent.
+agent.kill('SIGKILL');
+await new Promise((r) => setTimeout(r, 300));
+process.exit(fail.length ? 1 : 0);

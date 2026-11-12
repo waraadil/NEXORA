@@ -126,6 +126,42 @@ export async function clearPairingCode(userId: string): Promise<void> {
     .eq('user_id', userId);
 }
 
+/**
+ * The agent gave up on a pairing that was never completed.
+ *
+ * Drop the stale code and the claim so the page stops pretending a code is
+ * coming, and record why in last_error — that is what the user is shown. The
+ * row goes back to 'unpaired' rather than sitting at 'pending' forever.
+ */
+export async function markPairingFailed(userId: string, reason: string): Promise<void> {
+  const admin = createSupabaseAdminClient();
+
+  // If this account was already linked, failing a *re*-pairing must not erase
+  // the link's history: put it back to "offline" so the Reconnect card stays.
+  // Only a first-ever pairing falls all the way back to unpaired.
+  const { data } = await admin
+    .from('whatsapp_integrations')
+    .select('bridge_self_number')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  const previouslyLinked = Boolean(data?.bridge_self_number);
+
+  await admin
+    .from('whatsapp_integrations')
+    .update({
+      status: previouslyLinked ? 'connected' : 'disabled',
+      bridge_session_state: previouslyLinked ? 'offline' : 'unpaired',
+      bridge_session_state_at: new Date().toISOString(),
+      agent_claim_hash: null,
+      agent_claim_expires_at: null,
+      pairing_code: null,
+      pairing_code_at: null,
+      last_error: reason,
+    })
+    .eq('user_id', userId);
+}
+
 /** Revoke: the agent's next poll is rejected and it stops. */
 export async function revokeAgent(userId: string): Promise<void> {
   const admin = createSupabaseAdminClient();

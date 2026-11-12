@@ -6,6 +6,7 @@ import {
   storePairingCode,
   clearPairingCode,
   wasRevoked,
+  markPairingFailed,
 } from '@/lib/whatsapp/agent-auth';
 import { heartbeatRelay, touchRelay } from '@/lib/whatsapp/relay';
 import { syncChat, MAX_BATCH, type InboundChat, type InboundMessage } from '@/lib/whatsapp/relay-sync';
@@ -29,8 +30,11 @@ function bearer(request: NextRequest): string {
 }
 
 type PollBody = {
-  /** The agent's own view: connecting, awaiting_code, waiting_scan, connected, offline. */
-  state?: 'starting' | 'awaiting_code' | 'waiting_scan' | 'connected' | 'offline';
+  /**
+   * The agent's own view. 'unpaired' means it gave up on a pairing that was
+   * never completed — the reason carries what the user should do next.
+   */
+  state?: 'starting' | 'awaiting_code' | 'waiting_scan' | 'connected' | 'offline' | 'unpaired';
   /** Code WhatsApp issued for the number the user typed in the app. */
   pairingCode?: string | null;
   selfJid?: string | null;
@@ -102,6 +106,12 @@ export async function POST(request: NextRequest) {
   }
 
   if (body.pairingCode) await storePairingCode(ctx.userId, body.pairingCode);
+
+  // A pairing the agent abandoned must not leave a live-looking code on screen.
+  if (body.state === 'unpaired') {
+    await clearPairingCode(ctx.userId);
+    await markPairingFailed(ctx.userId, body.reason ?? 'Pairing did not complete. Press Reconnect for a fresh code.');
+  }
 
   if (body.state === 'offline' && body.reason) {
     await touchRelay(ctx.userId, { reason: body.reason });

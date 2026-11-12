@@ -44,6 +44,9 @@ const PORT = Number(process.env.PORT || process.env.NEXORA_AGENT_PORT || 8787);
 const ROOT = process.env.NEXORA_AGENT_DIR || join(homedir(), '.nexora-agent');
 const POLL_MS = Number(process.env.NEXORA_POLL_MS || 3000);
 
+/** How many times a *never-linked* pairing may retry before giving up. */
+const MAX_PAIR_ATTEMPTS = Number(process.env.NEXORA_PAIR_ATTEMPTS || 3);
+
 const log = (...a) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...a);
 
 if (!BASE || !SECRET) {
@@ -64,6 +67,10 @@ class Link {
     this.outbox = []; // messages collected since the last poll
     this.acks = []; // results for replies the app handed out
     this.stopped = false;
+    // A pairing that never completed must not churn forever: each restart asks
+    // WhatsApp for a new code, and the old one on screen silently dies.
+    this.everConnected = false;
+    this.restarts = 0;
     this.contacts = new Map();
     this.groups = new Map();
     this.dir = join(ROOT, userId);
@@ -142,6 +149,8 @@ class Link {
 
       if (connection === 'open') {
         this.connected = true;
+        this.everConnected = true;
+        this.restarts = 0;
         this.pairingCode = null;
         const me = this.socket.user;
         this.me = {
@@ -165,14 +174,38 @@ class Link {
         }
 
         if (this.stopped) return;
-        log(`… dropped (${code ?? '?'}), reconnecting`);
-        await new Promise((r) => setTimeout(r, 2500));
+
+        // Before the first successful link, WhatsApp closes with 401 after the
+        // registration attempt if the code was not entered. Retrying silently
+        // mints a new code every couple of seconds, so the code the user is
+        // reading on screen stops working without warning. Give a pairing a
+        // few attempts, then stop and say so — NEXORA's Reconnect button starts
+        // a fresh one deliberately.
+        if (!this.everConnected) {
+          this.restarts += 1;
+          if (this.restarts > MAX_PAIR_ATTEMPTS) {
+            log(`✗ pairing did not complete after ${MAX_PAIR_ATTEMPTS} attempts — stopping this link`);
+            this.call('session', {
+              state: 'unpaired',
+              error: 'Pairing expired. Press Reconnect in NEXORA to get a fresh code.',
+            }).catch(() => {});
+            this.stop();
+            return;
+          }
+          log(`… pairing dropped (${code ?? '?'}) — attempt ${this.restarts}/${MAX_PAIR_ATTEMPTS}`);
+        } else {
+          log(`… dropped (${code ?? '?'}), reconnecting`);
+        }
+
+        await new Promise((r) => setTimeout(r, this.everConnected ? 2500 : 4000));
+        if (this.stopped) return;
         this.start().catch((e) => log('restart failed:', e.message));
       }
     });
 
     if (!state.creds.registered && this.phone) {
       await new Promise((r) => setTimeout(r, 1800));
+      if (this.stopped || this.connected) return;
       try {
         const code = await this.socket.requestPairingCode(this.phone);
         this.pairingCode = formatCode(code);

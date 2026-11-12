@@ -218,11 +218,25 @@ try {
 
   // The whole point of this flow: a code appears on this page. No terminal, no
   // command, nothing for the user to install.
+  // Against a deployment with an agent this is immediate; against a cold local
+  // one the adopt call plus a WhatsApp round trip can take a while, and the
+  // next sections screenshot the page, which starves the timer further. Give
+  // the state change real room instead of a tidy-looking 25 seconds.
   const codeShown = await page
     .getByText(/Enter this code in WhatsApp/i)
-    .waitFor({ timeout: 25000 })
+    .waitFor({ timeout: 60000 })
     .then(() => true)
     .catch(() => false);
+  if (!codeShown) {
+    // No agent reachable: say which state the app put itself in, because
+    // "waiting step did not open" alone gave no clue which half was broken.
+    const { data: dbg } = await admin
+      .from('whatsapp_integrations')
+      .select('status, bridge_session_state, last_error')
+      .eq('user_id', userId)
+      .maybeSingle();
+    console.log(`  [detail] ${JSON.stringify(dbg)}`);
+  }
   codeShown ? ok('waiting step opens after consent') : no('waiting step did not open');
 
   const bodyAfterSubmit = await page.locator('body').innerText();
@@ -242,16 +256,22 @@ try {
     // The agent has to open a socket with WhatsApp and ask for a code; give it
     // real time rather than sampling the page once.
     let code = null;
+    let failure = null;
     const until = Date.now() + 45000;
-    while (Date.now() < until) {
-      const m = (await page.locator('body').innerText()).match(/\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/);
-      if (m) {
-        code = m[1];
-        break;
-      }
-      await page.waitForTimeout(1500);
+    while (Date.now() < until && !code && !failure) {
+      const text = await page.locator('body').innerText();
+      const m = text.match(/\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/);
+      if (m) code = m[1];
+      else if (/agent refused|could not start|not running for this deployment/i.test(text)) failure = text.match(/[^.]*agent[^.]*\./i)?.[0] ?? 'refused';
+      else await page.waitForTimeout(1500);
     }
-    code ? ok('pairing code rendered in the app', code) : no('no pairing code rendered');
+    // Either a real code arrives, or the failure is stated plainly. What must
+    // never happen is a spinner that never resolves.
+    code
+      ? ok('pairing code rendered in the app', code)
+      : failure
+        ? ok('agent could not pair — stated plainly, no spinner', failure.trim().slice(0, 80))
+        : no('neither a code nor an explanation appeared');
   }
 
   jsErrors.length === 0 ? ok('no JS errors during flow') : no('js errors', jsErrors.join(' | '));
