@@ -57,6 +57,13 @@ const MAX_PAIR_ATTEMPTS = Number(process.env.NEXORA_PAIR_ATTEMPTS || 3);
  */
 const ENV_AGENT_TOKEN = (process.env.NEXORA_AGENT_TOKEN || '').trim();
 
+/**
+ * Shown in /health so a deployment can be identified from outside. A host that
+ * never redeployed answers `{ok:true}` and looks perfectly healthy while
+ * silently missing every fix — which is precisely the failure this avoids.
+ */
+const AGENT_VERSION = '2026-11-12.1';
+
 const log = (...a) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...a);
 
 if (!BASE || !SECRET) {
@@ -527,14 +534,25 @@ const server = createServer(async (req, res) => {
   };
 
   if (req.method === 'GET' && req.url === '/health') {
-    return json(200, {
+    const health = {
       ok: true,
+      // Which build is answering. Without this, a host that never redeployed
+      // looks identical to one running the latest code — and the keep-alive is
+      // exactly the kind of thing you only notice when it is silently absent.
+      version: AGENT_VERSION,
+      // Whether the self keep-alive is armed, and the last time it reached us.
+      // A visitor can then tell "awake because it is healthy" from "awake
+      // because it is being kept warm", which is the difference between the
+      // socket staying up and the socket dying later.
+      keepAlive: SELF_KEEPALIVE.state(),
+      uptimeSeconds: Math.round(process.uptime()),
       links: [...live.values()].map((l) => ({
         userId: l.userId,
         connected: l.connected,
         pairingCode: l.pairingCode,
       })),
-    });
+    };
+    return json(200, health);
   }
 
   if (req.method !== 'POST' || req.url !== '/adopt') {
@@ -583,15 +601,42 @@ server.listen(PORT, '0.0.0.0', () => {
  *   • Failure is logged once and retried next tick — a failed self-ping must
  *     never take down a process that is otherwise holding live sessions.
  */
+const SELF_KEEPALIVE = {
+  enabled: false,
+  target: null,
+  intervalSeconds: 0,
+  lastPingAt: null,
+  lastPingOk: null,
+  pings: 0,
+  state() {
+    return {
+      enabled: this.enabled,
+      target: this.target,
+      intervalSeconds: this.intervalSeconds,
+      lastPingAt: this.lastPingAt,
+      lastPingOk: this.lastPingOk,
+      pings: this.pings,
+    };
+  },
+};
+
 function startSelfKeepAlive() {
   const external = (process.env.RENDER_EXTERNAL_URL || '').replace(/\/+$/, '');
   const seconds = Number(process.env.NEXORA_SELF_PING_SECONDS ?? 600);
 
-  if (!external) return;
+  if (!external) {
+    SELF_KEEPALIVE.state = () => ({ enabled: false, reason: 'not on Render (no RENDER_EXTERNAL_URL)' });
+    return;
+  }
   if (!Number.isFinite(seconds) || seconds <= 0) {
+    SELF_KEEPALIVE.state = () => ({ enabled: false, reason: 'disabled by NEXORA_SELF_PING_SECONDS=0' });
     log('self keep-alive disabled (NEXORA_SELF_PING_SECONDS=0)');
     return;
   }
+
+  SELF_KEEPALIVE.enabled = true;
+  SELF_KEEPALIVE.target = `${external}/health`;
+  SELF_KEEPALIVE.intervalSeconds = seconds;
 
   let warned = false;
   const tick = async () => {
@@ -600,6 +645,10 @@ function startSelfKeepAlive() {
         signal: AbortSignal.timeout(20000),
         headers: { 'user-agent': 'nexora-agent/self-keepalive' },
       });
+      SELF_KEEPALIVE.pings += 1;
+      SELF_KEEPALIVE.lastPingAt = new Date().toISOString();
+      SELF_KEEPALIVE.lastPingOk = res.ok;
+
       if (!res.ok && !warned) {
         log(`self keep-alive: HTTP ${res.status} — will keep trying`);
         warned = true;
@@ -607,6 +656,9 @@ function startSelfKeepAlive() {
         warned = false;
       }
     } catch (e) {
+      SELF_KEEPALIVE.pings += 1;
+      SELF_KEEPALIVE.lastPingAt = new Date().toISOString();
+      SELF_KEEPALIVE.lastPingOk = false;
       if (!warned) {
         log(`self keep-alive failed (${e.message}) — will keep trying`);
         warned = true;
