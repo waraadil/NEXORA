@@ -191,6 +191,36 @@ try {
   // ── 3. an inbound message produces an AI reply ──────────────────────────
   console.log('\n3. inbound WhatsApp message -> AI reply handed back');
   const chatJid = '919812345678@s.whatsapp.net';
+
+  // Auto-reply is OPT-IN PER PERSON, so this chat has to be switched on before
+  // the message is looked at. Order matters and is not obvious: the poll that
+  // carries a message runs the gate SYNCHRONOUSLY while the request is open, so
+  // opting in after the response arrives is already too late — the gate has
+  // decided and recorded "not on the auto-reply list". Create the chat first
+  // (the way the app does when an inbound message lands), opt it in, then send.
+  const { data: contact, error: contactErr } = await admin
+    .from('contacts')
+    .insert({ user_id: uid, wa_jid: chatJid, display_name: 'Priya', phone: '919812345678' })
+    .select('id')
+    .single();
+  if (contactErr) console.log('     contact insert failed:', contactErr.message);
+
+  const chatRow = {
+    user_id: uid,
+    contact_id: contact.id,
+    wa_chat_id: chatJid,
+    title: 'Priya',
+    is_group: false,
+    auto_reply_mode: 'on',
+    last_message_at: new Date().toISOString(),
+  };
+  const { data: preConv, error: preConvErr } = await admin
+    .from('conversations')
+    .insert(chatRow)
+    .select('id, auto_reply_mode')
+    .single();
+  if (preConvErr) console.log('     pre-create conversation failed:', preConvErr.message);
+
   const r3 = await poll(agentToken, {
     state: 'connected',
     messages: [
@@ -209,8 +239,37 @@ try {
     ],
   });
   check('message poll accepted', r3.status === 200, `got ${r3.status}`);
-  const replies = r3.json?.replies ?? [];
-  check('at least one reply planned', replies.length > 0, JSON.stringify(r3.json).slice(0, 300));
+
+  // A message is deliberately NOT answered the moment it arrives: the chat has
+  // to be quiet for REPLY_SETTLE_MS (6s, counted from when NEXORA saw the
+  // message) so a burst of lines produces one reply, not one per line. Poll the
+  // way the real agent does — every 3s — until a reply comes back, and assert it
+  // did not arrive sooner than the settle window allows.
+  const pollStart = Date.now();
+  let replies = [];
+  let waited = 0;
+
+  // Poll exactly like the agent does — every 3s — and record how long it takes
+  // before a reply is handed back.
+  for (let i = 0; i < 12; i++) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const again = await poll(agentToken, { state: 'connected' });
+    replies = again.json?.replies ?? [];
+    waited = Date.now() - pollStart;
+    if (replies.length) break;
+  }
+
+  check(
+    'no reply inside the settle window',
+    waited >= 6000,
+    `a reply came back after only ${waited}ms — inside the 6000ms settle window`,
+  );
+  check('a settled, opted-in chat is eventually answered', replies.length > 0, JSON.stringify(replies).slice(0, 200));
+  check(
+    'it waited out the settle window before answering',
+    waited >= 6000,
+    `answered after ${waited}ms, expected the reply to be held >= 6000ms`,
+  );
   const reply = replies[0];
   check('reply is addressed to the contact', reply?.chatId === chatJid, JSON.stringify(reply ?? {}).slice(0, 200));
   check('reply has body text', typeof reply?.body === 'string' && reply.body.length > 0, JSON.stringify(reply ?? {}).slice(0, 200));
@@ -252,6 +311,55 @@ try {
   const r6 = await poll('nxr_agent_totally-made-up', { state: 'connected' });
   check('unknown token is rejected', r6.status === 401, `got ${r6.status}`);
   check('unknown token says unauthorised', r6.json?.reason === 'unauthorised', JSON.stringify(r6.json));
+
+  // ── 7. RECONNECT — the case that broke in production ────────────────────
+  // After a disconnect the row still carries agent_revoked_at. Pressing Pair
+  // again mints a fresh claim; once the link comes up that claim is upgraded to
+  // a NEW durable token. If the old revocation timestamp survives the upgrade,
+  // the brand-new token is born already-revoked: the very next poll answers 401
+  // `unlinked` and the agent tears down a link that had just started working.
+  // That is precisely how a pairing that showed no code ended with zero polls.
+  console.log('\n6. reconnecting after a disconnect yields a WORKING token');
+  const claim2 = `nxr_claim_${randomBytes(24).toString('base64url')}`;
+  await admin
+    .from('whatsapp_integrations')
+    .update({
+      status: 'pending',
+      bridge_session_state: 'pairing',
+      bridge_session_state_at: new Date().toISOString(),
+      bridge_pairing_phone: '919876543210',
+      agent_claim_hash: sha256(claim2),
+      agent_claim_expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      pairing_code: null,
+      // The revocation from step 5 is deliberately left set: that is the exact
+      // state a real disconnect leaves behind, and a fresh pair must survive it.
+    })
+    .eq('user_id', uid);
+
+  const r7 = await poll(claim2, { state: 'awaiting_code', pairingCode: 'PAIR-2X7Q' });
+  check('fresh claim accepted while the row is still revoked', r7.status === 200, `got ${r7.status} ${JSON.stringify(r7.json)}`);
+
+  const r8 = await poll(claim2, {
+    state: 'connected',
+    selfJid: '919876543210@s.whatsapp.net',
+    selfPhone: '919876543210',
+    selfName: 'Loop Tester',
+  });
+  const token2 = r8.json?.agentToken;
+  check('second pairing issues a durable token', typeof token2 === 'string', String(token2));
+
+  const { data: afterReconnect } = await admin
+    .from('whatsapp_integrations')
+    .select('agent_revoked_at, agent_claim_hash')
+    .eq('user_id', uid)
+    .maybeSingle();
+  check('the revocation is cleared by the upgrade', afterReconnect?.agent_revoked_at === null, JSON.stringify(afterReconnect));
+  check('the one-use claim is consumed', afterReconnect?.agent_claim_hash === null, JSON.stringify(afterReconnect));
+
+  if (token2) {
+    const r9 = await poll(token2, { state: 'connected' });
+    check('the new token actually authorises a poll', r9.status === 200, `got ${r9.status} ${JSON.stringify(r9.json)}`);
+  }
 } finally {
   await admin.from('ai_credentials').delete().eq('user_id', uid);
   await admin.from('whatsapp_outbound').delete().eq('user_id', uid);

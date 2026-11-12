@@ -35,6 +35,13 @@ export { MAX_PER_CONVERSATION_PER_HOUR };
 export const MAX_PER_USER_PER_HOUR = 40;
 export const CLAIM_STALE_MS = 5 * 60 * 1000;
 
+/**
+ * Marks a message that was put back because its chat was still being typed
+ * into. Stored in auto_reply_error so the next poll can find exactly these rows
+ * and give them the answer they are still waiting for.
+ */
+const SETTLE_RELEASED = 'waiting for the chat to settle';
+
 const SAFETY_INSTRUCTIONS = `You are replying on the user's behalf without them reading it first.
 Be conservative and never:
 - promise, confirm, book, or commit to anything on the user's behalf
@@ -56,6 +63,8 @@ type Claimed = {
   provider_message_id: string | null;
   /** When this batch was claimed — the reference for the settle cap. */
   auto_reply_claim_at: string | null;
+  /** When NEXORA first saw the message. The settle window counts from here. */
+  created_at: string;
 };
 
 export async function planAutoReplies(params: {
@@ -87,7 +96,7 @@ export async function planAutoReplies(params: {
     .in('conversation_id', params.conversationIds)
     .eq('auto_reply_state', 'pending')
     .eq('is_from_me', false)
-    .select('id, conversation_id, body, sender_name, sent_at, provider_message_id, auto_reply_claim_at');
+    .select('id, conversation_id, body, sender_name, sent_at, provider_message_id, auto_reply_claim_at, created_at');
 
   if (claimErr) return { queued: 0, skipped: 0, reason: `claim failed: ${claimErr.message}` };
   if (!claimed?.length) return { queued: 0, skipped: 0 };
@@ -195,7 +204,15 @@ async function releaseToPending(
   if (!ids.length) return;
   await admin
     .from('messages')
-    .update({ auto_reply_state: 'pending', auto_reply_claim_at: null })
+    .update({
+      auto_reply_state: 'pending',
+      auto_reply_claim_at: null,
+      // A marker, not an error the user ever sees: it is how the next poll
+      // knows this message is waiting on the settle window rather than on a
+      // gate that already declined it. Without it the release was a dead end —
+      // the row sat at 'pending' and no poll ever looked at it again.
+      auto_reply_error: SETTLE_RELEASED,
+    })
     .eq('user_id', userId)
     .in('id', ids);
 }
@@ -299,9 +316,17 @@ async function gateConversation(
   }
 
   // ── Have they finished typing? ──────────────────────────────────────────
-  const newestAt = Math.max(
-    ...messages.map((m) => new Date(m.sent_at ?? Date.now()).getTime()),
-  );
+  //
+  // Measured from when NEXORA SAW the message, not from the timestamp WhatsApp
+  // put on it. That difference is the whole point: if the agent was asleep, the
+  // request was slow, or a socket was reconnecting, WhatsApp's clock can already
+  // be older than the settle window by the time the message reaches us. Counting
+  // from sent_at would then answer instantly — and a burst delivered late would
+  // still produce a burst of replies, which is the exact bug this window exists
+  // to prevent. Counting from created_at means every message gets the same quiet
+  // period however long it took to arrive.
+  const observedAt = (m: Claimed) => new Date(m.created_at ?? m.sent_at ?? Date.now()).getTime();
+  const newestAt = Math.max(...messages.map(observedAt));
   const firstSeenAt = Math.min(
     ...messages.map((m) => new Date(m.auto_reply_claim_at ?? Date.now()).getTime()),
   );
@@ -570,6 +595,72 @@ async function maybeAutoPause(
     })
     .eq('id', integrationId)
     .eq('user_id', userId);
+}
+
+/**
+ * Answer conversations whose messages were released by the settle window.
+ *
+ * THE GAP THIS CLOSES
+ * ───────────────────
+ * The burst fix works by holding a message back while the chat may still be
+ * being typed into: the message goes to `waiting` and is put back to `pending`
+ * for the next poll. But `planAutoReplies` was only ever called for a
+ * conversation that had just RECEIVED a new message (`inserted > 0`). So a
+ * message that was deliberately released had no future poll to pick it up:
+ *
+ *     one message arrives      -> held back (settle)   -> pending
+ *     the person sends nothing -> no new message       -> never planned
+ *
+ * The contact is left on read. Bursts masked it, because a burst's later lines
+ * re-trigger the same conversation; a single message — the most common case —
+ * was silently never answered.
+ *
+ * This runs on every poll and answers exactly the conversations that have work
+ * waiting but no new traffic. `planAutoReplies` re-checks the settle window
+ * itself, so a chat that is still being typed into simply goes back to waiting.
+ */
+export async function answerSettledConversations(params: {
+  userId: string;
+  integrationId: string;
+}): Promise<number> {
+  const admin = createSupabaseAdminClient();
+
+  // Scope to rows the settle window released, not to every pending message.
+  // A message the gate deliberately skipped is marked 'skipped', but one it
+  // could not judge yet (no credential, a transient read) stays 'pending' — and
+  // re-planning those on every poll would be an endless retry loop against a
+  // gate that has already said no.
+  const { data: waiting, error } = await admin
+    .from('messages')
+    .select('conversation_id')
+    .eq('user_id', params.userId)
+    .eq('auto_reply_state', 'pending')
+    .eq('is_from_me', false)
+    .eq('auto_reply_error', SETTLE_RELEASED)
+    .limit(500);
+
+  if (error || !waiting?.length) return 0;
+
+  const ids = [...new Set(waiting.map((m) => m.conversation_id).filter(Boolean))] as string[];
+  if (!ids.length) return 0;
+
+  const { data: optedIn } = await admin
+    .from('conversations')
+    .select('id')
+    .eq('user_id', params.userId)
+    .eq('auto_reply_mode', 'on')
+    .eq('is_group', false)
+    .in('id', ids);
+
+  for (const row of optedIn ?? []) {
+    await planAutoReplies({
+      userId: params.userId,
+      integrationId: params.integrationId,
+      conversationIds: [row.id as string],
+    });
+  }
+
+  return optedIn?.length ?? 0;
 }
 
 /** Clear rows stuck in 'claimed' by a crashed server. */

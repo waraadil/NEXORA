@@ -102,6 +102,12 @@ export async function upgradeClaimToAgent(ctx: AgentContext): Promise<string | n
       agent_claim_hash: null,
       agent_claim_expires_at: null,
       agent_last_seen_at: new Date().toISOString(),
+      // A brand-new token is by definition not revoked. Leaving the old
+      // revocation timestamp behind made every freshly issued token inert: the
+      // next poll matched its hash, saw agent_revoked_at, answered 401
+      // `unlinked`, and the agent tore a working link down seconds after it
+      // came up. Clearing it here is what makes Reconnect actually reconnect.
+      agent_revoked_at: null,
     })
     .eq('id', ctx.integrationId)
     .eq('user_id', ctx.userId);
@@ -155,6 +161,10 @@ export async function markPairingFailed(userId: string, reason: string): Promise
       bridge_session_state_at: new Date().toISOString(),
       agent_claim_hash: null,
       agent_claim_expires_at: null,
+      // The pairing that was holding this revocation open is over. A stale
+      // revocation here poisons the NEXT token too, because upgradeClaimToAgent
+      // writes a token that already has a revocation timestamp against the row.
+      agent_revoked_at: null,
       pairing_code: null,
       pairing_code_at: null,
       last_error: reason,

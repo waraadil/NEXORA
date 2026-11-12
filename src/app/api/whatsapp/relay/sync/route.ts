@@ -1,7 +1,11 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { createSupabaseAdminClient } from '@/lib/supabase/server';
 import { syncChat, MAX_BATCH, type InboundChat, type InboundMessage } from '@/lib/whatsapp/relay-sync';
-import { planAutoReplies, releaseStaleClaims } from '@/lib/whatsapp/auto-reply';
+import {
+  planAutoReplies,
+  releaseStaleClaims,
+  answerSettledConversations,
+} from '@/lib/whatsapp/auto-reply';
 import { heartbeatRelay } from '@/lib/whatsapp/relay';
 import { requireRelay, relayError, readJson } from '../_lib';
 
@@ -96,6 +100,16 @@ export async function POST(request: NextRequest) {
         conversationIds: [result.conversationId],
       });
       replies = await claimDueReplies(owner.userId, result.conversationId, body.chat.name);
+    }
+
+    // A message held back by the settle window is released to 'pending' and
+    // will never produce a new message of its own, so nothing above would ever
+    // look at it again. This is the poll that answers it.
+    if (!body.history && owner.autoReplyEnabled) {
+      await answerSettledConversations({
+        userId: owner.userId,
+        integrationId: owner.integrationId,
+      });
     }
 
     return NextResponse.json({

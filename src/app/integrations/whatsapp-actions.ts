@@ -161,7 +161,7 @@ export async function confirmPairing(): Promise<PairingState> {
   if (!live) {
     return {
       error:
-        'The relay has not connected yet. Keep the terminal window open — it links within about 20 seconds of the code being entered.',
+        'Your phone has not linked yet. Check that NEXORA appears under Linked devices on your phone, then try again — it links within about 20 seconds of the code being entered.',
     };
   }
 

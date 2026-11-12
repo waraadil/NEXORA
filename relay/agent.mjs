@@ -22,7 +22,7 @@
  */
 
 import { createServer } from 'node:http';
-import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import makeWASocket, {
@@ -62,7 +62,7 @@ const ENV_AGENT_TOKEN = (process.env.NEXORA_AGENT_TOKEN || '').trim();
  * never redeployed answers `{ok:true}` and looks perfectly healthy while
  * silently missing every fix — which is precisely the failure this avoids.
  */
-const AGENT_VERSION = '2026-11-12.1';
+const AGENT_VERSION = '2026-11-13.1';
 
 const log = (...a) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...a);
 
@@ -73,10 +73,13 @@ if (!BASE || !SECRET) {
 
 /** One live WhatsApp link. */
 class Link {
-  constructor({ userId, claim, phone }) {
+  constructor({ userId, claim, phone, paired = false }) {
     this.userId = userId;
     this.token = claim; // swapped for a durable token on first successful poll
     this.phone = phone;
+    // True when this Link came from a fresh "Pair" request. A fresh pair must
+    // not inherit credentials from the previous link; see start().
+    this.paired = paired;
     this.socket = null;
     this.connected = false;
     this.pairingCode = null;
@@ -127,9 +130,28 @@ class Link {
     if (this.stopped) return;
     await mkdir(this.dir, { recursive: true });
 
-    // Restore the session from NEXORA first, so a fresh host does not force a
-    // re-pair. The app stores it encrypted; this is the only copy on disk.
-    await this.restoreSession();
+    // A pairing means "pair", not "resume". Anything already in this folder is
+    // from a previous link — and if it is still registered, Baileys walks
+    // straight into a reconnect that WhatsApp rejects with 401 and the code
+    // request below is never reached, so the user presses Pair and no code ever
+    // appears. That is exactly what happened after the first disconnect: the
+    // folder outlived the link because nothing had ever deleted it.
+    //
+    // So when this Link was created from an adopt (this.paired), start from a
+    // clean folder. Restores still keep their session, which is what makes a
+    // restart cheap.
+    if (this.paired) {
+      await wipeDir(this.dir);
+      // …and drop the copy in NEXORA too, or restoreSession writes the very
+      // credentials the wipe just removed straight back onto the disk and the
+      // pairing asks for no code again. A pairing replaces the old link; it
+      // does not resume it, so the old session must go from BOTH copies.
+      await this.call('session', undefined, 'DELETE').catch(() => {});
+    } else {
+      // Restore the session from NEXORA first, so a fresh host does not force a
+      // re-pair. The app stores it encrypted; this is the only copy on disk.
+      await this.restoreSession();
+    }
 
     const { state, saveCreds } = await useMultiFileAuthState(this.dir);
     const { version } = await fetchLatestBaileysVersion();
@@ -186,6 +208,16 @@ class Link {
         if (code === DisconnectReason.loggedOut) {
           log('✗ device removed from WhatsApp — clearing session');
           await this.call('session', undefined, 'DELETE').catch(() => {});
+          // If this happened while a pairing was still in progress, the user is
+          // sitting on "Generating your code…" with no idea why. Tell the app
+          // before shutting down, or this is a silent failure by definition.
+          if (!this.everConnected) {
+            await this.call('session', {
+              state: 'unpaired',
+              error:
+                'WhatsApp refused this device. Press Reconnect in NEXORA to start a fresh pairing.',
+            }).catch(() => {});
+          }
           this.stop();
           return;
         }
@@ -231,6 +263,16 @@ class Link {
         this.poll().catch(() => {});
       } catch (e) {
         log('pairing code failed:', e.message);
+        // A pairing that cannot even get a code must never look like it is
+        // still working. Report it, so the app shows the reason instead of an
+        // endless spinner.
+        if (!this.everConnected) {
+          await this.call('session', {
+            state: 'unpaired',
+            error: `WhatsApp would not issue a pairing code (${String(e.message).slice(0, 90)}). Press Reconnect to try again.`,
+          }).catch(() => {});
+          this.stop();
+        }
       }
     }
   }
@@ -452,6 +494,34 @@ function formatCode(code) {
   return String(code).replace(/(\w{4})(?=\w)/g, '$1-');
 }
 
+/**
+ * Delete everything in a link's auth folder.
+ *
+ * A pairing has to start from nothing. Credentials left over from a previous
+ * link make Baileys think the account is already registered, so it never asks
+ * WhatsApp for a pairing code — the user presses Pair and nothing appears. The
+ * wipe is best-effort and per-file: one unreadable entry must not stop the rest,
+ * and a folder that does not exist is the normal first-pair case.
+ */
+async function wipeDir(dir) {
+  let entries;
+  try {
+    entries = await readdir(dir);
+  } catch {
+    return; // nothing there — a clean first pairing
+  }
+  let removed = 0;
+  for (const name of entries) {
+    try {
+      await unlink(join(dir, name));
+      removed += 1;
+    } catch {
+      /* a subdirectory or a file already gone; not worth failing a pair over */
+    }
+  }
+  if (removed) log(`· cleared ${removed} credential file(s) from ${dir} before pairing`);
+}
+
 function unwrap(message) {
   let m = message;
   for (let i = 0; i < 3 && m; i++) {
@@ -519,7 +589,7 @@ async function adoptLink({ base, claim, phone, userId }) {
     existing.stop();
   }
 
-  const link = new Link({ userId, claim, phone });
+  const link = new Link({ userId, claim, phone, paired: true });
   live.set(userId, link);
   link.start().catch((e) => log('link start failed:', e.message));
   return { ok: true };

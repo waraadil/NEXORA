@@ -602,10 +602,20 @@ try {
       .eq('user_id', userId)
       .eq('provider_message_id', 'TESTMSG005')
       .maybeSingle();
+    // Scope to THIS conversation. A reply from an earlier fixture is not
+    // evidence that this fresh message was answered early, and counting it made
+    // the suite fail on a correct system.
+    const { data: thisConvo } = await admin
+      .from('conversations')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('wa_chat_id', convoJid)
+      .maybeSingle();
     const { data: earlyReply } = await admin
       .from('whatsapp_outbound')
       .select('id')
       .eq('user_id', userId)
+      .eq('conversation_id', thisConvo?.id ?? '')
       .eq('source', 'auto_reply');
 
     (earlyReply?.length ?? 0) === 0

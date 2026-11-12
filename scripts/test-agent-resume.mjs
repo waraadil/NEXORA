@@ -188,8 +188,7 @@ try {
     }
   }
 
-  console.log('\n4. a revoked token is not allowed to resume anything');
-  agent.kill('SIGKILL');
+  console.log('\n4. a revoked token is not allowed to resume anything');  agent.kill('SIGKILL');
   await new Promise((r) => setTimeout(r, 500));
   await admin
     .from('whatsapp_integrations')
@@ -209,6 +208,70 @@ try {
   check('agent still healthy with a dead token', dh?.ok === true, JSON.stringify(dh));
   check('but it holds no links', (dh?.links?.length ?? 0) === 0, JSON.stringify(dh?.links ?? []));
   dead.kill('SIGKILL');
+
+  // ── 5. A FRESH PAIR MUST NOT INHERIT THE OLD LINK'S CREDENTIALS ─────────
+  // This is the bug that produced "no code ever appears". The agent's auth
+  // folder lives on a long-running host (NEXORA_AGENT_DIR=/tmp/nexora-agent),
+  // and nothing deleted it when a link was disconnected. Baileys then loaded
+  // registered creds, believed the account was already authenticated, and never
+  // reached the requestPairingCode call — so the user pressed Pair, no code
+  // appeared, and the socket died a few seconds later.
+  console.log('\n5. a fresh pairing wipes stale credentials instead of trusting them');
+  await new Promise((r) => setTimeout(r, 400));
+  await admin
+    .from('whatsapp_integrations')
+    .update({ agent_revoked_at: null })
+    .eq('user_id', uid);
+
+  // Leave a plausible "already registered" credential set where the agent will
+  // look. If start() trusts this, it will never ask for a code.
+  const { mkdir: mk, writeFile: wf } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const staleDir = join(DIR, uid);
+  await mk(staleDir, { recursive: true });
+  await wf(join(staleDir, 'creds.json'), JSON.stringify({ registered: true, me: { id: '919876543210:1@s.whatsapp.net' } }));
+
+  const pairingAgent = startAgent({ NEXORA_AGENT_TOKEN: '' });
+  await new Promise((r) => setTimeout(r, 2500));
+
+  const claim = `nxr_claim_${randomBytes(24).toString('base64url')}`;
+  await admin
+    .from('whatsapp_integrations')
+    .update({
+      status: 'pending',
+      bridge_session_state: 'pairing',
+      bridge_session_state_at: new Date().toISOString(),
+      agent_claim_hash: createHash('sha256').update(claim).digest('hex'),
+      agent_claim_expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    })
+    .eq('user_id', uid);
+
+  const adopted = await fetch(`http://127.0.0.1:${PORT}/adopt`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-nexora-agent-secret': SECRET },
+    body: JSON.stringify({ base: BASE, claim, phone: '919876543210', userId: uid }),
+  }).then((r) => r.json());
+  check('agent accepts the pairing request', adopted?.ok === true, JSON.stringify(adopted));
+
+  await new Promise((r) => setTimeout(r, 3500));
+  check(
+    'it says it cleared the old credentials',
+    /cleared \d+ credential file\(s\)/.test(pairingAgent.log),
+    pairingAgent.log.split('\n').filter((l) => /clear|credential/i.test(l)).slice(-2).join(' | ') || '(nothing logged)',
+  );
+  const { readdir, readFile: rf } = await import('node:fs/promises');
+  const left = await readdir(staleDir).catch(() => ['<missing dir>']);
+  let credsNow = null;
+  try { credsNow = JSON.parse(await rf(join(staleDir, 'creds.json'), 'utf8')); } catch { /* absent */ }
+  // Baileys always creates a creds.json when the folder is empty, so "the file
+  // exists" proves nothing. What matters is that it no longer holds the OLD
+  // registration — that is the thing that made the code request unreachable.
+  check(
+    'the old registration is gone, not inherited',
+    !credsNow || credsNow.registered !== true,
+    `creds.json still says registered=${credsNow?.registered}`,
+  );
+  pairingAgent.kill('SIGKILL');
 } finally {
   await admin.from('whatsapp_sessions').delete().eq('user_id', uid);
   await admin.from('whatsapp_integrations').delete().eq('user_id', uid);

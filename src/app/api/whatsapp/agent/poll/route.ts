@@ -10,7 +10,11 @@ import {
 } from '@/lib/whatsapp/agent-auth';
 import { heartbeatRelay, touchRelay } from '@/lib/whatsapp/relay';
 import { syncChat, MAX_BATCH, type InboundChat, type InboundMessage } from '@/lib/whatsapp/relay-sync';
-import { planAutoReplies, releaseStaleClaims } from '@/lib/whatsapp/auto-reply';
+import {
+  planAutoReplies,
+  releaseStaleClaims,
+  answerSettledConversations,
+} from '@/lib/whatsapp/auto-reply';
 
 /**
  * POST /api/whatsapp/agent/poll
@@ -201,7 +205,7 @@ export async function POST(request: NextRequest) {
   }
 
   // ── 4. Generate replies for genuinely new inbound messages ──────────────
-  if (conversationIds.length && integration.auto_reply_enabled) {
+  if (integration.auto_reply_enabled) {
     await releaseStaleClaims(ctx.userId);
     for (const conversationId of conversationIds) {
       await planAutoReplies({
@@ -210,6 +214,13 @@ export async function POST(request: NextRequest) {
         conversationIds: [conversationId],
       });
     }
+    // …and for messages the settle window put back, which will never see a new
+    // message of their own. Without this a single message — the common case —
+    // is held for six seconds and then never answered.
+    await answerSettledConversations({
+      userId: ctx.userId,
+      integrationId: ctx.integrationId,
+    });
   }
 
   // ── 5. Hand back work: replies to send, and the pairing number ──────────
