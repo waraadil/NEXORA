@@ -40,7 +40,13 @@ await page.goto(`${BASE}/login`, { waitUntil: 'networkidle' });
 await page.fill('input[name="email"]', email);
 await page.fill('input[name="password"]', password);
 await page.click('form:has(input[name="email"]) button[type="submit"]');
-await page.waitForTimeout(3500);
+
+// Wait for the redirect rather than sleeping a fixed 3.5s: against production a
+// cold lambda can take longer than that to answer the sign-in, and the suite
+// then reported a missing palette on a page that had not finished navigating.
+await page
+  .waitForURL((u) => !u.pathname.includes('/login'), { timeout: 30000 })
+  .catch(() => {});
 
 /**
  * The shell must be interactive before a keyboard shortcut can mean anything.
