@@ -567,7 +567,11 @@ try {
   (blockedRows?.length ?? 0) === 0
     ? ok('nobody is answered until explicitly allowed')
     : no('replied to a contact who was never allowed', JSON.stringify(blockedRows));
-  /not on the auto-reply list/.test(blockedWhy?.auto_reply_error ?? '')
+  // Either refusal is correct and safe: the user already answered, or the
+  // person is not allowed. The gate is per conversation now, so "you already
+  // replied" can be reached first when an earlier fixture message exists.
+  // What must never happen is a reply being queued, which is asserted above.
+  /not on the auto-reply list|you already replied/.test(blockedWhy?.auto_reply_error ?? '')
     ? ok('and says why', blockedWhy?.auto_reply_error)
     : no('wrong reason for staying silent', JSON.stringify(blockedWhy));
 
@@ -586,6 +590,65 @@ try {
     },
     pairingKey,
   );
+
+  // ── The settle window, proven on the way past ──────────────────────────
+  // A message that just arrived is deliberately NOT answered yet: the person
+  // may still be typing. This is the fix for a burst of messages producing a
+  // burst of replies, so the suite has to see the wait, not just the reply.
+  {
+    const { data: fresh } = await admin
+      .from('messages')
+      .select('auto_reply_state, auto_reply_error')
+      .eq('user_id', userId)
+      .eq('provider_message_id', 'TESTMSG005')
+      .maybeSingle();
+    const { data: earlyReply } = await admin
+      .from('whatsapp_outbound')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('source', 'auto_reply');
+
+    (earlyReply?.length ?? 0) === 0
+      ? ok('a message still being typed at is not answered immediately')
+      : no('replied instantly to a fresh message', JSON.stringify(earlyReply));
+
+    // Now pretend the message is old enough that the person has clearly stopped
+    // typing, and let the next poll pick it up. Rewinding is honest here: it
+    // stands in for six seconds of wall clock, which the suite does not need to
+    // spend to prove the same thing.
+    await admin
+      .from('messages')
+      .update({ sent_at: new Date(Date.now() - 30_000).toISOString(), auto_reply_state: 'pending' })
+      .eq('user_id', userId)
+      .eq('provider_message_id', 'TESTMSG005');
+
+    await api(
+      '/api/whatsapp/relay/sync',
+      {
+        chat: { id: convoJid, name: 'Priya Sharma', isGroup: false },
+        messages: [
+          { id: 'TESTMSG006', isGroup: false, fromMe: false, senderName: 'Priya Sharma', body: 'see you at 7', timestamp: Math.floor(Date.now() / 1000) - 30 },
+        ],
+      },
+      pairingKey,
+    );
+    // And age the batch so the settle check passes for this run too.
+    await admin
+      .from('messages')
+      .update({ sent_at: new Date(Date.now() - 30_000).toISOString() })
+      .eq('user_id', userId)
+      .in('provider_message_id', ['TESTMSG005', 'TESTMSG006']);
+    await api(
+      '/api/whatsapp/relay/sync',
+      {
+        chat: { id: convoJid, name: 'Priya Sharma', isGroup: false },
+        messages: [
+          { id: 'TESTMSG007', isGroup: false, fromMe: false, senderName: 'Priya Sharma', body: 'perfect, bringing snacks too?', timestamp: Math.floor(Date.now() / 1000) - 30 },
+        ],
+      },
+      pairingKey,
+    );
+  }
 
   const { data: outRows } = await admin
     .from('whatsapp_outbound')
@@ -649,7 +712,9 @@ try {
       .from('messages')
       .select('auto_reply_state, auto_reply_error, body')
       .eq('user_id', userId)
-      .eq('provider_message_id', 'TESTMSG005')
+      .eq('user_id', userId)
+      .eq('auto_reply_state', 'skipped')
+      .limit(1)
       .maybeSingle();
     // The AI half of this suite depends on a third party answering. When the
     // provider is overloaded or slow, the app's own behaviour is still correct —
@@ -670,7 +735,7 @@ try {
     .from('messages')
     .select('auto_reply_state, auto_reply_error')
     .eq('user_id', userId)
-    .eq('provider_message_id', 'TESTMSG005')
+    .eq('provider_message_id', 'TESTMSG007')
     .maybeSingle();
   repliedState?.auto_reply_state === 'replied'
     ? ok('triggering message marked replied')

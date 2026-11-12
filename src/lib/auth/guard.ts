@@ -31,12 +31,22 @@ export async function requireUser(): Promise<{
   return { user, supabase };
 }
 
+/**
+ * Guard for pages that need a completed profile.
+ *
+ * The profile read is unavoidably a second round trip: the user id only exists
+ * after `auth.getUser()`. Everything else on a page should therefore be issued
+ * once, together — see `db_conversations_page`.
+ */
 export async function requireOnboardedUser(): Promise<{
   user: User;
   supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>;
 }> {
   const { user, supabase } = await requireUser();
 
+  // Columns are narrowed to the one that is checked. This runs on every
+  // protected page load, so it is the single most repeated query in the app —
+  // and asking for a whole row to read one timestamp was pure transfer.
   const { data: profile } = await supabase
     .from('profiles')
     .select('onboarded_at')

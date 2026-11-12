@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
+import { deriveStyleProfile } from '@/lib/ai/intelligence';
 import {
   semanticSearch,
   embedMissingMessages,
@@ -231,5 +232,53 @@ export async function setConversationAutoReply(formData: FormData): Promise<void
   if (error) return;
 
   revalidatePath('/conversations');
+  revalidatePath(`/conversations/${conversationId}`);
+}
+
+/**
+ * Derive how the user writes *with this person*.
+ *
+ * `deriveStyleProfile` already supported this — it takes a conversationId and
+ * writes `contacts.communication_style` — but nothing ever called it that way,
+ * so every chat was described by one global profile built from whichever
+ * conversation happened to be sampled. That is how a romantic register reached
+ * people the user writes to formally.
+ *
+ * Guidance only; it never sends anything. Below the threshold it refuses rather
+ * than spending a model call to learn nothing.
+ */
+export async function deriveContactStyle(formData: FormData): Promise<void> {
+  const { supabase, user } = await requireUser();
+  if (!user) return;
+
+  const conversationId = String(formData.get('conversationId') ?? '').trim();
+  if (!conversationId) return;
+
+  const { data: conv } = await supabase
+    .from('conversations')
+    .select('id, contact_id')
+    .eq('id', conversationId)
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  if (!conv) return;
+
+  const { count } = await supabase
+    .from('messages')
+    .select('id', { count: 'exact', head: true })
+    .eq('conversation_id', conversationId)
+    .eq('user_id', user.id)
+    .eq('is_from_me', true);
+
+  // Below the threshold the transcript already teaches the model more than a
+  // summary of it would, so this is a no-op rather than a wasted model call.
+  if ((count ?? 0) < 25) return;
+
+  await deriveStyleProfile({
+    userId: user.id,
+    conversationId,
+    contactId: (conv.contact_id as string) ?? undefined,
+  });
+
   revalidatePath(`/conversations/${conversationId}`);
 }

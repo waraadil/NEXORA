@@ -6,7 +6,8 @@ import { requireOnboardedUser } from '@/lib/auth/guard';
 import { AppShell } from '@/components/app-shell';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { setConversationAutoReply } from '../actions';
+import { setConversationAutoReply, deriveContactStyle } from '../actions';
+import { registerFor } from '@/lib/whatsapp/intelligence';
 
 export const metadata: Metadata = { title: 'Conversation' };
 
@@ -26,34 +27,55 @@ export default async function ConversationPage({
 
   const { user, supabase } = await requireOnboardedUser();
 
-  const { data: conv } = await supabase
-    .from('conversations')
-    .select(
-      'id, title, source, is_group, message_count, first_message_at, last_message_at, auto_reply_mode, auto_reply_paused_at, auto_reply_paused_reason, contacts(id, display_name, relationship)',
-    )
-    .eq('id', id)
-    .eq('user_id', user.id) // ownership pinned — a wrong id 404s, never leaks
-    .maybeSingle();
+  const PAGE = 100;
 
+  // Both reads are pinned to the same id and neither needs the other's result,
+  // so they are issued together. Serially they cost two round trips before the
+  // first pixel can be painted.
+  const [convRes, rowsRes] = await Promise.all([
+    supabase
+      .from('conversations')
+      .select(
+        'id, title, source, is_group, contact_id, message_count, first_message_at, last_message_at, auto_reply_mode, auto_reply_paused_at, auto_reply_paused_reason, contacts(id, display_name, relationship)',
+      )
+      .eq('id', id)
+      .eq('user_id', user.id) // ownership pinned — a wrong id 404s, never leaks
+      .maybeSingle(),
+    (() => {
+      let query = supabase
+        .from('messages')
+        .select('id, sender_name, is_from_me, body, sent_at')
+        .eq('conversation_id', id)
+        .eq('user_id', user.id)
+        .order('sent_at', { ascending: false })
+        .limit(PAGE);
+      if (before) query = query.lt('sent_at', before);
+      return query;
+    })(),
+  ]);
+
+  const conv = convRes.data;
   if (!conv) notFound();
 
-  const PAGE = 100;
-  let query = supabase
-    .from('messages')
-    .select('id, sender_name, is_from_me, body, sent_at')
-    .eq('conversation_id', id)
-    .eq('user_id', user.id)
-    .order('sent_at', { ascending: false })
-    .limit(PAGE);
-
-  if (before) query = query.lt('sent_at', before);
-
-  const { data: rows } = await query;
+  const rows = rowsRes.data;
   const messages = (rows ?? []).slice().reverse();
   const hasMore = (rows?.length ?? 0) === PAGE;
   const oldest = messages[0]?.sent_at;
 
   const contactRel = Array.isArray(conv.contacts) ? conv.contacts[0] : conv.contacts;
+  const register = registerFor((contactRel as { relationship?: string | null } | null)?.relationship);
+
+  // How the model will address this person: a specific register, and whether it
+  // has learned this particular relationship rather than guessing from a
+  // profile built somewhere else.
+  const { data: contactStyle } = conv.contact_id
+    ? await supabase
+        .from('contacts')
+        .select('communication_style')
+        .eq('id', conv.contact_id as string)
+        .eq('user_id', user.id)
+        .maybeSingle()
+    : { data: null };
 
   return (
     <AppShell
@@ -82,6 +104,41 @@ export default async function ConversationPage({
           </Link>
         )}
       </div>
+
+      {/* What the AI thinks this person is to you, and whether it has learned
+          how you actually write to them. Stated because a register guessed from
+          a global profile is the reason a message to a client once read like a
+          message to a partner. */}
+      {!conv.is_group && (
+        <div className="mb-4 rounded-xl border border-border bg-surface p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-medium text-foreground">Writing style here</span>
+            <Badge tone={register === 'close' ? 'primary' : register === 'formal' ? 'neutral' : 'neutral'}>
+              {register}
+            </Badge>
+            {contactStyle?.communication_style ? (
+              <Badge tone="success">learned</Badge>
+            ) : (
+              <Badge tone="neutral">not learned yet</Badge>
+            )}
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {contactStyle?.communication_style
+              ? contactStyle.communication_style
+              : register === 'formal'
+                ? 'Replies stay plain and courteous until it has seen enough of how you write to this person.'
+                : 'Replies follow your overall style until it has seen enough of how you write here.'}
+          </p>
+          {!contactStyle?.communication_style && (
+            <form action={deriveContactStyle} className="mt-2">
+              <input type="hidden" name="conversationId" value={conv.id} />
+              <Button type="submit" size="sm" variant="outline">
+                Learn from this chat
+              </Button>
+            </form>
+          )}
+        </div>
+      )}
 
       {/* Who may be answered here. Stated plainly at the top of the person's own
           conversation, because "the AI replies to some people" is only reassuring

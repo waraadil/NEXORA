@@ -20,7 +20,10 @@ console.log('\n[Planner wiring]');
 check(src.includes('canAutoReply('), 'planner calls the allowlist gate');
 check(/auto_reply_mode/.test(src), 'planner reads the per-conversation mode');
 check(/isGroup: !!conv\.is_group/.test(src), 'planner passes group status into the gate');
-check(/if \(!scope\.allowed\) return skip\(scope\.detail\)/.test(src), 'a refused gate stops before drafting');
+check(
+  /if \(!scope\.allowed\) \{[\s\S]{0,160}verdict: 'skip'/.test(src),
+  'a refused gate stops before drafting',
+);
 check(src.indexOf('canAutoReply(') < src.indexOf('callProvider('), 'the gate runs BEFORE the model is called');
 
 // The allowlist must be checked before any AI spend, otherwise "off" still
@@ -40,6 +43,26 @@ check(src.includes('emojiInstruction('), 'the model is also told the policy up f
 // The re-check before sending is what fixes "it kept quiet after I replied".
 const recheck = src.lastIndexOf('userRepliedSince(');
 check(recheck > src.indexOf('callProvider('), 'the "did they reply themselves?" check runs again after drafting');
+
+// ── Burst handling ──
+check(src.includes('collapseTurns('), 'the planner collapses a burst into one turn');
+check(src.includes('shouldWaitForSettle('), 'the planner waits for the person to stop typing');
+check(
+  src.indexOf('collapseTurns(') < src.indexOf('callProvider('),
+  'a burst is collapsed BEFORE any model call',
+);
+// The old shape was a gate + model call inside a per-message loop. If the gate
+// ever moves back inside handleOne, each message costs a full round trip again.
+const perMessageLoop = /for \(const message of claimed/.test(src);
+check(!perMessageLoop, 'the planner no longer loops the gate over every claimed message');
+check(
+  src.includes("gate.verdict === 'wait'") && src.includes('releaseToPending('),
+  'a message still being typed at is handed back, not answered',
+);
+check(
+  /markAll\(/.test(src),
+  'batch state changes are done in one statement, not one per row',
+);
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
