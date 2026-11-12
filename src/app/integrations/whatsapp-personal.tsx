@@ -27,7 +27,7 @@ import {
  */
 
 export type RelayView = {
-  status: 'unpaired' | 'waiting' | 'connecting' | 'live' | 'offline' | 'unpaired_remote';
+  status: 'unpaired' | 'waiting' | 'connecting' | 'live' | 'offline' | 'unpaired_remote' | 'expired';
   lastSeenAt: string | null;
   selfNumber: string | null;
   selfName: string | null;
@@ -96,11 +96,9 @@ function Steps({ current }: { current: 1 | 2 | 3 }) {
 export function WhatsappPersonal({
   relay,
   drafts,
-  baseUrl,
 }: {
   relay: RelayView;
   drafts: DraftRow[];
-  baseUrl: string;
 }) {
   const [stage, setStage] = useState<'closed' | 'details' | 'consent'>('closed');
 
@@ -120,7 +118,10 @@ export function WhatsappPersonal({
   const [reconnectNote, setReconnectNote] = useState<string | null>(null);
 
   const live = relay.status === 'live';
-  const waiting = relay.status === 'waiting' || relay.status === 'connecting';
+  // Only an OPEN pairing window is "waiting". A closed one is its own state — the
+  // page used to treat both as waiting and trap the user on a dead spinner.
+  const expired = relay.status === 'expired';
+  const waiting = (relay.status === 'waiting' || relay.status === 'connecting') && !expired;
 
   // The pairing window is 15 minutes. Show a live countdown so "nothing is
   // happening" is never just a guess.
@@ -300,6 +301,16 @@ export function WhatsappPersonal({
                     </Button>
                   </div>
                 </>
+              ) : expired ? (
+                // No code and the window is gone: say so. A spinner here is a
+                // lie that never resolves — the exact thing this page is for.
+                <div className="space-y-1">
+                  <p className="text-sm font-medium text-foreground">This attempt has expired.</p>
+                  <p className="text-sm text-muted-foreground">
+                    WhatsApp codes are only good for 15 minutes, and no code was accepted in that
+                    time. Nothing is broken — start again below.
+                  </p>
+                </div>
               ) : (
                 <div className="flex items-center gap-3">
                   <span className="size-4 shrink-0 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
@@ -328,48 +339,127 @@ export function WhatsappPersonal({
                 This page updates by itself — you don’t need to refresh or press anything. Messages
                 start arriving as soon as the code is accepted.
               </p>
-              <div className="mt-2 flex items-center gap-3">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  isLoading={checking}
-                  onClick={() =>
-                    startChecking(async () => {
-                      const result = await confirmPairing();
-                      if (result?.error) setCheckNote(result.error);
-                    })
-                  }
-                >
-                  Check now
-                </Button>
-                {checkNote && <span className="text-xs">{checkNote}</span>}
-              </div>
+              {expired ? (
+                // The honest way out. This starts a brand-new 15-minute window on
+                // the same number, so the user never needs to find a hidden
+                // "start over" path — and never needs a terminal.
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    isLoading={reconnecting}
+                    onClick={() => {
+                      setReconnectNote(null);
+                      startReconnecting(async () => {
+                        const result = await reconnectPairing();
+                        if (result?.error) setReconnectNote(result.error);
+                      });
+                    }}
+                  >
+                    Get a new code
+                  </Button>
+                  <form action={unlinkWhatsApp}>
+                    <Button type="submit" variant="outline" size="sm">
+                      Disconnect instead
+                    </Button>
+                  </form>
+                </div>
+              ) : (
+                <div className="mt-2 flex items-center gap-3">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    isLoading={checking}
+                    onClick={() =>
+                      startChecking(async () => {
+                        const result = await confirmPairing();
+                        if (result?.error) setCheckNote(result.error);
+                      })
+                    }
+                  >
+                    Check now
+                  </Button>
+                  {checkNote && <span className="text-xs">{checkNote}</span>}
+                </div>
+              )}
+              {expired && reconnectNote && (
+                <p role="alert" className="mt-2 text-sm text-destructive">
+                  {reconnectNote}
+                </p>
+              )}
             </div>
           </CardContent>
         </Card>
 
-        {/* The old manual path stays, but it is no longer the way in. */}
-        <details className="rounded-xl border border-border bg-surface/60 p-4">
-          <summary className="cursor-pointer list-none text-sm font-medium text-muted-foreground hover:text-foreground">
-            Advanced: run the agent yourself
-          </summary>
-          <div className="mt-3 space-y-2 text-sm text-muted-foreground">
-            <p>
-              Only needed if you are hosting NEXORA yourself and no agent is running. Put this on any
-              always-on machine; it holds the WhatsApp connection and needs no open ports.
+        {/*
+          There used to be an "Advanced: run the agent yourself" block here with a
+          shell command in it. It was the only way out of a stuck pairing, which
+          made a terminal step load-bearing for an ordinary user — exactly what
+          this flow exists to remove. The hosted agent is now the only path; the
+          command lives in relay/HOSTING.md for anyone self-hosting, where nobody
+          can click it by accident.
+        */}
+      </div>
+    );
+  }
+
+  // ── The last attempt ran out of time ────────────────────────────────────
+  //
+  // This is the state that trapped a real user: a pairing was started, the
+  // 15-minute window closed, and the page kept showing a spinner under an
+  // "expired" badge with no way to start again. Falling through to the
+  // first-time form silently would also be wrong — it pretends nothing
+  // happened. Say what happened, and put the way out right there.
+  if (expired) {
+    return (
+      <div className="space-y-4">
+        <Card className="border-warning/30 bg-warning-subtle">
+          <CardHeader>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className="text-base">That pairing ran out of time</CardTitle>
+              <Badge tone="warning">expired</Badge>
+            </div>
+            <CardDescription>
+              A WhatsApp pairing code is only good for 15 minutes, and no code was accepted
+              {relay.pairingPhone ? ` for +${relay.pairingPhone}` : ''} before the window closed.
+              Nothing is broken — nothing was linked, and your phone was never touched.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Steps current={2} />
+            <p className="text-sm text-muted-foreground">
+              Getting a new code opens a fresh 15-minute window for the same number. Type it into
+              WhatsApp straight away — the clock starts when the code appears.
             </p>
-            <pre className="overflow-x-auto rounded-lg bg-muted p-2.5 font-mono text-[11px] text-foreground">
-{`NEXORA_URL=${baseUrl} \
-NEXORA_AGENT_SECRET=<your secret> \
-node relay/agent.mjs`}
-            </pre>
-            <p>
-              WhatsApp will then show a code in the agent’s log instead of here. Everything else —
-              messages, auto-reply, disconnect — is identical.
-            </p>
-          </div>
-        </details>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                isLoading={reconnecting}
+                onClick={() => {
+                  setReconnectNote(null);
+                  startReconnecting(async () => {
+                    const result = await reconnectPairing();
+                    if (result?.error) setReconnectNote(result.error);
+                  });
+                }}
+              >
+                Get a new code
+              </Button>
+              <form action={unlinkWhatsApp}>
+                <Button type="submit" variant="outline" size="sm">
+                  Use a different number
+                </Button>
+              </form>
+            </div>
+            {reconnectNote && (
+              <p role="alert" className="text-sm text-destructive">
+                {reconnectNote}
+              </p>
+            )}
+          </CardContent>
+        </Card>
       </div>
     );
   }

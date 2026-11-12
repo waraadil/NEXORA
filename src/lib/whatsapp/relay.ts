@@ -240,8 +240,13 @@ export async function touchRelay(
 
 /** Human-readable state for the UI, derived from stored facts only. */
 export type RelayState = {
-  /** UI vocabulary. 'live' means connected AND heartbeating recently. */
-  status: 'unpaired' | 'waiting' | 'connecting' | 'live' | 'offline' | 'unpaired_remote';
+  /**
+   * UI vocabulary. 'live' means connected AND heartbeating recently.
+   * 'expired' means a pairing was started but its 15-minute window closed
+   * without a link — distinct from 'unpaired' so the page can say what happened
+   * instead of silently showing the first-time form again.
+   */
+  status: 'unpaired' | 'waiting' | 'connecting' | 'live' | 'offline' | 'unpaired_remote' | 'expired';
   lastSeenAt: string | null;
   selfNumber: string | null;
   selfName: string | null;
@@ -285,19 +290,48 @@ export function describeRelay(row: Record<string, unknown> | null): RelayState {
   const lastSeenAt = (row.bridge_last_seen_at as string | null) ?? null;
   const pairingAt = row.bridge_pairing_at ? new Date(row.bridge_pairing_at as string).getTime() : null;
 
+  // A pairing window is 15 minutes. Anything older is not "waiting" — it is a
+  // dead attempt, and rendering it as waiting is a trap: the card shows a
+  // spinner and an "expired" badge at the same time, the form that would start
+  // a fresh pairing is never rendered, and there is no way out but a hidden
+  // advanced block. Age it out and let the page offer a real restart.
+  // What the countdown actually measures.
+  //
+  // The 15-minute window belongs to the CODE, not to the click that started it.
+  // The agent has to wake, open a socket and ask WhatsApp, which can take most
+  // of a minute, and it may retry up to three times. Starting the clock at
+  // `bridge_pairing_at` meant a user could be given a brand-new code with a
+  // countdown already reading a few seconds — and be told it expired while the
+  // code was still perfectly good. Use the moment the code reached us, falling
+  // back to the click only while no code has arrived yet.
+  const codeAt = row.pairing_code_at ? new Date(row.pairing_code_at as string).getTime() : null;
+  const windowStart = codeAt ?? pairingAt;
+  const pairingStale = windowStart !== null && Date.now() - windowStart > PAIRING_TTL_MS;
+
+  // A code whose own 15 minutes are up is rejected by WhatsApp, so it must not
+  // be shown even if the claim window is somehow still open.
+  const codeStale = codeAt !== null && Date.now() - codeAt > PAIRING_TTL_MS;
+  const storedStatus = (row.status as string) ?? null;
+  const storedSession = (row.bridge_session_state as string | null) ?? null;
+
+  const status =
+    pairingStale && !row.bridge_self_number
+      ? ('expired' as const)
+      : storedToUiStatus(storedStatus, storedSession);
+
   return {
     ...base,
-    status: storedToUiStatus(
-      (row.status as string) ?? null,
-      (row.bridge_session_state as string | null) ?? null,
-    ),
+    status,
     lastSeenAt,
     selfNumber: (row.bridge_self_number as string | null) ?? null,
     selfName: (row.bridge_self_name as string | null) ?? null,
     deviceName: (row.bridge_device_name as string | null) ?? null,
     pairingPhone: (row.bridge_pairing_phone as string | null) ?? null,
-    pairingExpiresAt: pairingAt ? new Date(pairingAt + PAIRING_TTL_MS).toISOString() : null,
-    pairingCode: (row.pairing_code as string | null) ?? null,
+    pairingExpiresAt:
+      windowStart && !pairingStale ? new Date(windowStart + PAIRING_TTL_MS).toISOString() : null,
+    // A dead code is worse than no code: WhatsApp rejects it and the user types
+    // a stale string into their phone.
+    pairingCode: codeStale ? null : ((row.pairing_code as string | null) ?? null),
     lastError: (row.last_error as string | null) ?? null,
     autoReplyEnabled: !!row.auto_reply_enabled,
     requireApproval: !!row.auto_reply_require_approval,

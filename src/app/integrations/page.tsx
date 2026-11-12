@@ -33,6 +33,10 @@ export default async function IntegrationsPage() {
         'bridge_pairing_phone',
         'bridge_pairing_at',
         'pairing_code',
+        // Needed by describeRelay to age the countdown from when the CODE
+        // arrived rather than when the claim was written. Leaving it out made
+        // the fix silently no-op, which is exactly how the old behaviour shipped.
+        'pairing_code_at',
         'bridge_self_jid',
         'bridge_self_number',
         'bridge_self_name',
@@ -100,7 +104,7 @@ export default async function IntegrationsPage() {
       <div className="space-y-8">
         <section>
           <h2 className="mb-3 text-lg font-semibold">Personal WhatsApp</h2>
-          <WhatsappPersonal relay={{ ...view }} drafts={drafts} baseUrl={getAppUrl()} />
+          <WhatsappPersonal relay={{ ...view }} drafts={drafts} />
         </section>
 
         <section>
