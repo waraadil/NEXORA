@@ -102,7 +102,7 @@ export async function beginPairing(
       return {
         error: link.agentConfigured
           ? link.error
-          : 'No WhatsApp agent is running for this deployment, so there is nothing to hold the connection. An admin needs to start the agent once — after that this button works for everyone.',
+          : 'The WhatsApp agent is not running for this deployment yet, so there is nothing to hold the connection. It is a small service that runs once and then serves every pairing — setup takes about two minutes. See relay/HOSTING.md in the repository.',
       };
     }
 
