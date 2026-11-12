@@ -226,13 +226,22 @@ export async function POST(request: NextRequest) {
   // ── 5. Hand back work: replies to send, and the pairing number ──────────
   const replies: { id: string; chatId: string; toName: string; body: string }[] = [];
 
-  const staleCutoff = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+  // A reply is dispatched when it is approved and its delay has elapsed. Rows
+  // already handed out are re-offered after a short lease, because the hand-out
+  // is only ever confirmed by the agent's ack on a LATER poll: if that ack is
+  // lost — a restart, a dropped response, a deploy — the row would sit in
+  // `queued` forever and the person would simply never be answered. Two minutes
+  // was long enough for that to be visible as "it replied to everyone except
+  // me". The lease is short, and duplicates are prevented by the ack path, which
+  // matches on provider_message_id, plus the agent's own dedupe.
+  const nowIso = new Date().toISOString();
+  const queuedLeaseCutoff = new Date(Date.now() - 30 * 1000).toISOString();
   const { data: due } = await admin
     .from('whatsapp_outbound')
-    .select('id, chat_jid, body, conversation_id, status, created_at')
+    .select('id, chat_jid, body, conversation_id, status, created_at, not_before')
     .eq('user_id', ctx.userId)
     .or(
-      `and(status.eq.approved,not_before.lte.${new Date().toISOString()}),and(status.eq.queued,created_at.lte.${staleCutoff})`,
+      `and(status.eq.approved,not_before.lte.${nowIso}),and(status.eq.queued,created_at.lte.${queuedLeaseCutoff})`,
     )
     .order('created_at', { ascending: true })
     .limit(10);

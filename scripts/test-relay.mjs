@@ -598,7 +598,7 @@ try {
   {
     const { data: fresh } = await admin
       .from('messages')
-      .select('auto_reply_state, auto_reply_error')
+      .select('auto_reply_state, auto_reply_error, created_at')
       .eq('user_id', userId)
       .eq('provider_message_id', 'TESTMSG005')
       .maybeSingle();
@@ -611,16 +611,58 @@ try {
       .eq('user_id', userId)
       .eq('wa_chat_id', convoJid)
       .maybeSingle();
+    // What matters is that THIS message — the one that just arrived — was not
+    // answered yet. An earlier fixture in the same chat (TESTMSG001/002 arrive
+    // 60s in the past, so their settle window has genuinely elapsed) may already
+    // have a reply, and counting that would fail a correct system. The message
+    // itself is the unit under test, so ask about the message: while it is fresh
+    // it must still be waiting, not replied.
     const { data: earlyReply } = await admin
       .from('whatsapp_outbound')
       .select('id')
       .eq('user_id', userId)
       .eq('conversation_id', thisConvo?.id ?? '')
-      .eq('source', 'auto_reply');
+      .eq('source', 'auto_reply')
+      // A reply that existed BEFORE this message was even seen cannot be a reply
+      // to it. Everything at or after the moment the message reached us is what
+      // must not be there yet.
+      .gte('created_at', fresh?.created_at ?? new Date().toISOString());
 
-    (earlyReply?.length ?? 0) === 0
-      ? ok('a message still being typed at is not answered immediately')
-      : no('replied instantly to a fresh message', JSON.stringify(earlyReply));
+    const freshState = fresh?.auto_reply_state;
+    const held = freshState === 'pending' || freshState === 'claimed';
+
+    // By the time this assertion runs, the settle window has already elapsed —
+    // the sync call above blocks while the reply is drafted — so "is there a
+    // reply yet" cannot distinguish good from bad. The honest question is
+    // WHEN the reply was created relative to when the message reached us: it
+    // must be at least the settle window later, never sooner.
+    const { data: msgTiming } = await admin
+      .from('messages')
+      .select('created_at')
+      .eq('user_id', userId)
+      .eq('provider_message_id', 'TESTMSG005')
+      .maybeSingle();
+    const { data: replyTiming } = await admin
+      .from('whatsapp_outbound')
+      .select('created_at')
+      .eq('user_id', userId)
+      .eq('conversation_id', thisConvo?.id ?? '')
+      .eq('source', 'auto_reply')
+      .gte('created_at', msgTiming?.created_at ?? new Date().toISOString())
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    const gapMs = replyTiming?.created_at && msgTiming?.created_at
+      ? new Date(replyTiming.created_at).getTime() - new Date(msgTiming.created_at).getTime()
+      : null;
+
+    gapMs === null || gapMs >= 6000
+      ? ok(
+          'the reply waited out the settle window instead of answering on arrival',
+          gapMs === null ? 'no reply to this message yet' : `${gapMs}ms after the message was seen`,
+        )
+      : no('replied instantly to a fresh message', `replied after only ${gapMs}ms`);
 
     // Now pretend the message is old enough that the person has clearly stopped
     // typing, and let the next poll pick it up. Rewinding is honest here: it
