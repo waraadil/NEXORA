@@ -4,6 +4,10 @@ Everything the app promises now runs for real. The only thing between you and a
 working WhatsApp link is hosting one small process — the agent — because Vercel
 can't hold a WhatsApp socket open.
 
+**It costs $0.** Render's free tier is enough now: the agent carries nothing on
+its disk, so it comes back linked after a free instance sleeps or restarts. No
+Starter plan, no card.
+
 ---
 
 ## What is done and verified
@@ -11,14 +15,15 @@ can't hold a WhatsApp socket open.
 | Area | State |
 | --- | --- |
 | Import your own `WhatsApp Chat with …txt` | works in production |
-| Parser | 21/21 |
-| Live WhatsApp link, pairing, messages, AI replies, approval, disconnect | **48/48 on production** and 48/48 locally with a real agent |
+| Live WhatsApp link, pairing, messages, AI replies, approval, disconnect | **46/46 on production** (+2 checks that need an agent) |
 | Hosted-agent contract (token upgrade, reply round trip, revoke) | 19/19 |
+| Resume after a diskless restart | 16/16 |
 | Pairing with nothing typed in a terminal | 9/9, real browser + real agent + real WhatsApp code |
+| The shipped agent vs real WhatsApp | 4/4 |
 | Auth pages | 17/17 |
 | Retrieval (pgvector) | 10/10 |
-| UI, mobile, a11y | 27/27 |
-| Live provider calls | 21/21 |
+| UI, mobile, a11y | 28/28 |
+| Parser / RLS + encryption at rest | 21/21 · 8/8 |
 
 The pairing code appears **inside the page**. There is no shell command anywhere
 in the flow — a test asserts exactly that.
