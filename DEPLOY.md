@@ -46,6 +46,11 @@ in the flow — a test asserts exactly that.
 
 ---
 
+> **If the Render dashboard showed no Blueprint:** that was a real mistake on my
+> side, now fixed. Render only discovers a file named exactly `render.yaml` in
+> the **root** of the repository, and it was in `relay/`. It is at the root now
+> (commit `1852890`), so **refresh the New → Blueprint page** and it will appear.
+
 ## The one step left: host the agent (≈2 minutes, once)
 
 ### 1. Deploy the agent on Render
