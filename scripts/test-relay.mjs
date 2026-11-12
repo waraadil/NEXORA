@@ -215,21 +215,45 @@ try {
 
   await page.locator('#confirm').fill('I understand the risks');
   await page.getByRole('button', { name: 'Create pairing code' }).click();
-  await page.getByText('Finish linking').waitFor({ timeout: 20000 });
-  ok('pairing created and setup shown');
 
-  const cmdText = await page.locator('code').first().innerText();
-  const keyMatch = cmdText.match(/NEXORA_PAIRING_CODE=(\S+)/);
-  if (keyMatch) {
-    pairingKey = keyMatch[1];
-    ok('paste-ready command shown', `${pairingKey.slice(0, 14)}…`);
-  } else {
-    no('command has no pairing key', cmdText.slice(0, 80));
+  // The whole point of this flow: a code appears on this page. No terminal, no
+  // command, nothing for the user to install.
+  const codeShown = await page
+    .getByText(/Enter this code in WhatsApp/i)
+    .waitFor({ timeout: 25000 })
+    .then(() => true)
+    .catch(() => false);
+  codeShown ? ok('waiting step opens after consent') : no('waiting step did not open');
+
+  const bodyAfterSubmit = await page.locator('body').innerText();
+  /NEXORA_PAIRING_CODE|cd nexora-relay|node relay\.mjs|npm (i|install)/.test(bodyAfterSubmit)
+    ? no('a command is still shown in the default flow')
+    : ok('no shell command anywhere in the flow');
+
+  if (page.url().includes('/integrations')) {
+    (await page.getByText(/Linked devices/i).count()) > 0
+      ? ok('instructions name Linked devices')
+      : no('instructions missing');
   }
 
-  (await page.getByText(/Linked devices/i).count()) > 0
-    ? ok('instructions name Linked devices')
-    : no('instructions missing');
+  // Against production there is no agent yet, so the honest message is expected.
+  // Against a deployment with an agent, a real code must render.
+  if (process.env.EXPECT_AGENT === '1') {
+    // The agent has to open a socket with WhatsApp and ask for a code; give it
+    // real time rather than sampling the page once.
+    let code = null;
+    const until = Date.now() + 45000;
+    while (Date.now() < until) {
+      const m = (await page.locator('body').innerText()).match(/\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/);
+      if (m) {
+        code = m[1];
+        break;
+      }
+      await page.waitForTimeout(1500);
+    }
+    code ? ok('pairing code rendered in the app', code) : no('no pairing code rendered');
+  }
+
   jsErrors.length === 0 ? ok('no JS errors during flow') : no('js errors', jsErrors.join(' | '));
 
   console.log('\n[2. SECURITY — the relay key is load-bearing]');
@@ -246,7 +270,23 @@ try {
   const otherUserKey = await api('/api/whatsapp/relay/pending', {}, 'nxr_relay_forged_again');
   otherUserKey.status === 401 ? ok('pending rejects a forged key') : no('pending accepted forged key');
 
-  if (!pairingKey) throw new Error('no pairing key — cannot continue');
+  // The browser flow no longer hands out a relay key — that is the point of the
+  // rewrite — but the relay HTTP API is still a supported path (the advanced
+  // escape hatch). Seed a key exactly the way startPairing does so this suite
+  // still exercises the real endpoints rather than skipping them.
+  if (!pairingKey) {
+    const { createHash, randomBytes } = await import('node:crypto');
+    pairingKey = `nxr_relay_${randomBytes(32).toString('base64url')}`;
+    await admin
+      .from('whatsapp_integrations')
+      .update({
+        bridge_token_hash: createHash('sha256').update(pairingKey).digest('hex'),
+        bridge_session_state: 'pairing',
+        bridge_pairing_phone: '919876543210',
+      })
+      .eq('user_id', userId);
+    ok('relay key seeded for the API half');
+  }
 
   console.log('\n[3. PAIRING — the relay boots and links]');
   const ping = await api('/api/whatsapp/relay/ping', { state: 'connected', selfJid: '919876543210@s.whatsapp.net', selfPhone: '919876543210', selfName: 'Relay Tester' }, pairingKey);
@@ -447,10 +487,30 @@ try {
       ? ok('no reply leaves before the configured delay')
       : no('reply sent before its delay', JSON.stringify(early.json?.replies));
 
-    await new Promise((r) => setTimeout(r, 13000));
-    const later = await api('/api/whatsapp/relay/pending', {}, pairingKey);
+    // "Ask me before sending" is on, so nothing may leave without a decision.
+    // This is the user's own instruction: the AI drafts, the human approves.
+    const heldEarly = await api('/api/whatsapp/relay/pending', {}, pairingKey);
+    outRows[0].status === 'awaiting_approval' && (heldEarly.json?.replies?.length ?? 0) === 0
+      ? ok('approval gate holds the reply')
+      : no('reply bypassed the approval gate', `${outRows[0].status} / ${JSON.stringify(heldEarly.json)}`);
+
+    // Approve it, as the user would, and then it must become deliverable.
+    await admin
+      .from('whatsapp_outbound')
+      .update({ status: 'approved', approved_at: new Date().toISOString() })
+      .eq('id', outRows[0].id);
+
+    // Poll past the delay this suite configured rather than sleeping once and
+    // hoping the clock and the database agree to the millisecond.
+    let later = { json: {} };
+    const deadline = Date.now() + 40000;
+    while (Date.now() < deadline) {
+      later = await api('/api/whatsapp/relay/pending', {}, pairingKey);
+      if ((later.json?.replies?.length ?? 0) > 0) break;
+      await new Promise((r) => setTimeout(r, 2000));
+    }
     (later.json?.replies?.length ?? 0) === 1
-      ? ok('reply is handed to the relay once the delay elapses')
+      ? ok('approved reply is handed to the relay once the delay elapses')
       : no('reply never became deliverable', JSON.stringify(later.json));
 
     // Reuse the exact row the relay was just handed.

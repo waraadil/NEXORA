@@ -14,6 +14,7 @@ import {
   unlinkWhatsApp,
   updateAutoReply,
   decideDraft,
+  reconnectPairing,
   type PairingState,
 } from './whatsapp-actions';
 
@@ -115,6 +116,8 @@ export function WhatsappPersonal({
   const [copied, setCopied] = useState<string | null>(null);
   const [checking, startChecking] = useTransition();
   const [checkNote, setCheckNote] = useState<string | null>(null);
+  const [reconnecting, startReconnecting] = useTransition();
+  const [reconnectNote, setReconnectNote] = useState<string | null>(null);
 
   const live = relay.status === 'live';
   const waiting = relay.status === 'waiting' || relay.status === 'connecting';
@@ -385,17 +388,35 @@ node relay/agent.mjs`}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            <pre className="overflow-x-auto rounded-lg bg-muted p-2.5 font-mono text-[11px]">
-{`cd nexora-relay
-NEXORA_URL=${baseUrl} NEXORA_PAIRING_CODE=<your key> node relay.mjs`}
-            </pre>
+            <p className="text-sm text-muted-foreground">
+              Reconnecting takes one click — nothing to install and nothing to run.
+            </p>
             <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                isLoading={reconnecting}
+                onClick={() => {
+                  setReconnectNote(null);
+                  startReconnecting(async () => {
+                    const result = await reconnectPairing();
+                    if (result?.error) setReconnectNote(result.error);
+                  });
+                }}
+              >
+                Reconnect
+              </Button>
               <form action={unlinkWhatsApp}>
                 <Button type="submit" variant="outline" size="sm">
                   Disconnect and start over
                 </Button>
               </form>
             </div>
+            {reconnectNote && (
+              <p role="alert" className="text-sm text-destructive">
+                {reconnectNote}
+              </p>
+            )}
           </CardContent>
         </Card>
       </div>

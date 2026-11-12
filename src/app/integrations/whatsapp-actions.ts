@@ -112,6 +112,34 @@ export async function beginPairing(
   }
 }
 
+/**
+ * Reconnect an existing link that stopped reporting.
+ *
+ * The agent keeps its WhatsApp session on its own host, so recovery must not
+ * involve the user running anything. This hands the agent a fresh claim for the
+ * number already on file and lets it bring the session straight back up.
+ */
+export async function reconnectPairing(): Promise<PairingState> {
+  const user = await requireUser();
+  if (!user) return { error: 'Session expired. Sign in again.' };
+
+  const admin = createSupabaseAdminClient();
+  const { data } = await admin
+    .from('whatsapp_integrations')
+    .select('bridge_pairing_phone, bridge_self_number')
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  const phone = (data?.bridge_pairing_phone as string | null) ?? (data?.bridge_self_number as string | null);
+  if (!phone) return { error: 'No number on file. Start the link again.' };
+
+  const link = await startAgentLink({ userId: user.id, phone, appUrl: await appBaseUrl() });
+  revalidatePath('/integrations');
+
+  if (link.error) return { error: link.error };
+  return { step: 'ready', phone, agentAdopted: link.agentAdopted };
+}
+
 /** Called by the page/refresh button once the relay says it is connected. */
 export async function confirmPairing(): Promise<PairingState> {
   const user = await requireUser();

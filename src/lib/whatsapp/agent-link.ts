@@ -50,6 +50,8 @@ export async function startAgentLink(params: {
         status: 'pending',
         risk_acknowledged_at: now,
         risk_acknowledged_version: CONSENT_VERSION,
+        // Mirrors the form: approval is on until the owner turns it off.
+        auto_reply_require_approval: true,
         updated_at: now,
       },
       { onConflict: 'user_id' },
