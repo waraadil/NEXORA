@@ -173,9 +173,23 @@ await mpage.goto(`${BASE}/login`, { waitUntil: 'networkidle' });
 await mpage.fill('input[name="email"]', email);
 await mpage.fill('input[name="password"]', password);
 await mpage.click('form:has(input[name="email"]) button[type="submit"]');
-await mpage.waitForTimeout(3500);
+const arrived = await mpage
+  .waitForURL((u) => !u.pathname.includes('/login'), { timeout: 40000 })
+  .then(() => true)
+  .catch(() => false);
+// A second sign-in in the same second as the first can be rate-limited by
+// Supabase; say so instead of blaming the layout for a missing nav.
+arrived
+  ? check('mobile session established', true)
+  : check('mobile session established', false, `still on ${mpage.url()}`);
 await mpage.goto(`${BASE}/dashboard`, { waitUntil: 'networkidle' });
-await mpage.waitForTimeout(500);
+// The command palette lives in the desktop sidebar, which is display:none below
+// lg. Waiting for it on a 390px viewport waits forever by design; wait for the
+// mobile header instead, which is what this section is actually testing.
+await mpage
+  .locator('header')
+  .first()
+  .waitFor({ state: 'visible', timeout: 30000 });
 
 const bottomNav = mpage.locator('nav[aria-label="Primary"]').last();
 check('bottom nav present', (await bottomNav.count()) > 0);
