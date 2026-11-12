@@ -30,6 +30,37 @@ import { CONSENT_VERSION } from './bridge-risks';
 
 export const PAIRING_TTL_MS = 15 * 60 * 1000; // a code is good for 15 minutes
 
+/**
+ * The columns `describeRelay` reads. Exported so the integrations page and the
+ * pairing-status poll cannot drift apart — a missing column silently turns a
+ * live pairing back into "not linked", which is how one earlier fix shipped as
+ * a no-op.
+ */
+export const PAIRING_COLUMNS = [
+  'mode',
+  'status',
+  'display_phone',
+  'phone_number_id',
+  'bridge_last_seen_at',
+  'bridge_device_name',
+  'risk_acknowledged_at',
+  'bridge_pairing_phone',
+  'bridge_pairing_at',
+  'pairing_code',
+  'pairing_code_at',
+  'bridge_self_jid',
+  'bridge_self_number',
+  'bridge_self_name',
+  'bridge_session_state',
+  'last_error',
+  'auto_reply_enabled',
+  'auto_reply_require_approval',
+  'auto_reply_delay_seconds',
+  'auto_reply_instructions',
+  'auto_reply_paused_at',
+  'auto_reply_paused_reason',
+].join(', ');
+
 /** Digits only, no plus. WhatsApp rejects anything else. */
 export function normalizePairingPhone(input: string): string | null {
   const digits = String(input ?? '').replace(/[^\d]/g, '');

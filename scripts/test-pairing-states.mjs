@@ -204,6 +204,47 @@ try {
     ? no('offered Get started while a pairing was live')
     : ok('does not offer to start over while it is live');
 
+  // ── 7. The code must arrive while the tab is open ────────────────────────
+  // The reported bug, twice: press Pair, the agent really does fetch a code and
+  // store it, and the card keeps saying "Generating your code…" until the user
+  // reloads. The cause was that the card watched for the code with
+  // router.refresh(), the refreshed payload genuinely contained the code, and
+  // React still rendered the props it already had. Nothing was wrong with the
+  // data — only with the way the screen was told about it.
+  //
+  // So this does what a person does and nothing else: loads the page, waits for
+  // the spinner, then lets the code land in the database from outside the
+  // browser. No reload, no interaction. It has to show up on its own.
+  console.log('\n[7. A code that arrives after the page is already open]');
+  await seed({
+    status: 'pending',
+    sessionState: 'pairing',
+    pairingMinutesAgo: 1,
+    code: null,
+    codeMinutesAgo: null,
+  });
+  await page.goto(`${BASE}/integrations`, { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(2500);
+  const spinnerFirst = await has(/Generating your code/i);
+  spinnerFirst ? ok('shows it is working on the code') : no('no spinner while the code is missing');
+
+  await admin
+    .from('whatsapp_integrations')
+    .update({ pairing_code: 'LATE-7788', pairing_code_at: new Date().toISOString() })
+    .eq('user_id', userId);
+
+  let appeared = false;
+  for (let i = 0; i < 8 && !appeared; i += 1) {
+    await page.waitForTimeout(1000);
+    appeared = await has(/LATE-7788/);
+  }
+  appeared
+    ? ok('the code appeared on its own, with no reload')
+    : no('needed a reload to show the code', (await bodyText()).slice(0, 200).replace(/\s+/g, ' '));
+  appeared && !(await has(/Generating your code/i))
+    ? ok('and the spinner is gone once the code is there')
+    : appeared ? no('left the spinner up under a real code') : null;
+
   jsErrors.length === 0 ? ok('no JS errors') : no('JS errors', jsErrors.join(' | '));
 } catch (e) {
   no('crashed', e.message);

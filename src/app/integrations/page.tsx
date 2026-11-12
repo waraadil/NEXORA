@@ -1,9 +1,15 @@
 import type { Metadata } from 'next';
+import { connection } from 'next/server';
 import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { requireOnboardedUser } from '@/lib/auth/guard';
 import { AppShell } from '@/components/app-shell';
 import { getAppUrl } from '@/lib/app-url';
-import { describeRelay, isRelayLive, revealRelayKey } from '@/lib/whatsapp/relay';
+import {
+  describeRelay,
+  isRelayLive,
+  revealRelayKey,
+  PAIRING_COLUMNS,
+} from '@/lib/whatsapp/relay';
 import { IntegrationsClient } from './integrations-client';
 import { WhatsappPersonal, type DraftRow } from './whatsapp-personal';
 
@@ -14,6 +20,20 @@ export const metadata: Metadata = { title: 'Integrations' };
 export const instant = false;
 
 export default async function IntegrationsPage() {
+  // This page must be rendered per-request, not once and reused.
+  //
+  // The project enables cacheComponents. Without an explicit opt-out, a page
+  // that reads the database can still be prerendered, and `router.refresh()` —
+  // which the pairing card uses to look for the code the agent is fetching —
+  // then re-serves that same prerendered output. The card refreshed 39 times in
+  // a row while the code sat in the database, showing "Generating your code…"
+  // forever: the exact report of pressing Pair and getting nothing.
+  //
+  // `connection()` is the supported way to opt a route out of prerendering under
+  // cacheComponents; `export const dynamic` is a build error in this setup. The
+  // same line already keeps /api/whatsapp/agent/wake honest, for the same reason.
+  await connection();
+
   const { user, supabase } = await requireOnboardedUser();
 
   // Explicit column list. `select('*')` breaks the moment a secret-bearing
@@ -21,35 +41,7 @@ export default async function IntegrationsPage() {
   // session — which silently downgraded the whole page to "not linked".
   const { data: integration, error: integrationError } = await supabase
     .from('whatsapp_integrations')
-    .select(
-      [
-        'mode',
-        'status',
-        'display_phone',
-        'phone_number_id',
-        'bridge_last_seen_at',
-        'bridge_device_name',
-        'risk_acknowledged_at',
-        'bridge_pairing_phone',
-        'bridge_pairing_at',
-        'pairing_code',
-        // Needed by describeRelay to age the countdown from when the CODE
-        // arrived rather than when the claim was written. Leaving it out made
-        // the fix silently no-op, which is exactly how the old behaviour shipped.
-        'pairing_code_at',
-        'bridge_self_jid',
-        'bridge_self_number',
-        'bridge_self_name',
-        'bridge_session_state',
-        'last_error',
-        'auto_reply_enabled',
-        'auto_reply_require_approval',
-        'auto_reply_delay_seconds',
-        'auto_reply_instructions',
-        'auto_reply_paused_at',
-        'auto_reply_paused_reason',
-      ].join(', '),
-    )
+    .select(PAIRING_COLUMNS)
     .eq('user_id', user.id)
     .maybeSingle();
 

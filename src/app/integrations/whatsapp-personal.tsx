@@ -121,28 +121,42 @@ export function WhatsappPersonal({
   const [reconnecting, startReconnecting] = useTransition();
   const [reconnectNote, setReconnectNote] = useState<string | null>(null);
 
-  const live = relay.status === 'live';
+  // Server render on the first paint, polled value after that. The poll is the
+  // only thing that can see a pairing advance while the tab stays open.
+  const [polled, setPolled] = useState<{
+    status: string;
+    pairingCode: string | null;
+    pairingExpiresAt: string | null;
+    lastError: string | null;
+    selfNumber: string | null;
+    selfName: string | null;
+  } | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const status = polled?.status ?? relay.status;
+  const live = status === 'live';
   // Only an OPEN pairing window is "waiting". A closed one is its own state — the
   // page used to treat both as waiting and trap the user on a dead spinner.
-  const expired = relay.status === 'expired';
-  const waiting = (relay.status === 'waiting' || relay.status === 'connecting') && !expired;
+  const expired = status === 'expired';
+  const waiting = (status === 'waiting' || status === 'connecting') && !expired;
 
   // The pairing window is 15 minutes. Show a live countdown so "nothing is
   // happening" is never just a guess.
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
+  const pairingExpiresAt = polled?.pairingExpiresAt ?? relay.pairingExpiresAt;
   useEffect(() => {
-    if (!relay.pairingExpiresAt || live) {
+    if (!pairingExpiresAt || live) {
       setSecondsLeft(null);
       return;
     }
     const tick = () => {
-      const left = Math.round((new Date(relay.pairingExpiresAt!).getTime() - Date.now()) / 1000);
+      const left = Math.round((new Date(pairingExpiresAt).getTime() - Date.now()) / 1000);
       setSecondsLeft(left > 0 ? left : 0);
     };
     tick();
     const t = setInterval(tick, 1000);
     return () => clearInterval(t);
-  }, [relay.pairingExpiresAt, live]);
+  }, [pairingExpiresAt, live]);
 
   const copy = async (text: string, key: string) => {
     await navigator.clipboard.writeText(text);
@@ -151,24 +165,63 @@ export function WhatsappPersonal({
   };
 
   // Nothing to paste and nothing to run: the agent posts the code back and the
-  // page re-renders with it. There is deliberately no command on this screen.
-  const pairingCode = relay.pairingCode;
+  // card shows it. There is deliberately no command on this screen.
+  //
+  // The polled value wins whenever it exists, so a code that arrives after the
+  // page was painted still appears. The server-rendered value is what the first
+  // paint uses, and what a reload lands on.
+  const pairingCode = polled?.pairingCode ?? relay.pairingCode;
 
   // The agent issues the code a moment or two after the claim is written, so
-  // the page has to look for it. Without this the card sits on the spinner
-  // until the user happens to press something — which is exactly the "it's
-  // stuck" feeling this flow exists to remove.
-  const router = useRouter();
+  // the card has to look for it. Without this the card sits on the spinner
+  // until the user happens to press something — exactly the "it's stuck"
+  // feeling this flow exists to remove.
+  //
+  // This used to call router.refresh(), and it did not work. The refreshed
+  // payload really did contain the new code — verified on the wire — but React
+  // kept rendering the props it already had, so the spinner stayed up while the
+  // code was in the database and in the response. Only a manual reload ever
+  // showed it, which is precisely the bug that was reported, twice.
+  //
+  // So the card fetches the few fields it needs itself and holds them in state.
+  // There is no reconciler between the data and the screen that can drop it.
   useEffect(() => {
     if (!waiting) return;
-    const tick = () => router.refresh();
-    const first = setTimeout(tick, 1200);
-    const every = setInterval(tick, 2500);
+    let alive = true;
+
+    const tick = async () => {
+      try {
+        const res = await fetch('/api/whatsapp/pairing-status', { cache: 'no-store' });
+        if (!res.ok || !alive) return;
+        const next = await res.json();
+        if (!alive) return;
+        setPolled(next);
+        // Once the pairing leaves the waiting state, hand control back to the
+        // server render so the live card (and everything below it) is the real
+        // thing rather than a patched-up copy.
+        if (next.status && next.status !== 'waiting' && next.status !== 'connecting') {
+          setReloadKey((k) => k + 1);
+        }
+      } catch {
+        // A dropped poll is not an error worth showing; the next one is 2s away.
+      }
+    };
+
+    const first = setTimeout(tick, 800);
+    const every = setInterval(tick, 2000);
     return () => {
+      alive = false;
       clearTimeout(first);
       clearInterval(every);
     };
-  }, [waiting, router]);
+  }, [waiting]);
+
+  // One refresh, after the pairing resolves, so the page catches up in full.
+  const router = useRouter();
+  useEffect(() => {
+    if (reloadKey === 0) return;
+    router.refresh();
+  }, [reloadKey, router]);
 
   // ── Live ────────────────────────────────────────────────────────────────
   if (live) {

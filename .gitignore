@@ -50,3 +50,4 @@ next-env.d.ts
 # your WhatsApp account. Never tracked, never shipped.
 relay/auth/
 **/nexora-relay/auth/
+relay/node_modules/
