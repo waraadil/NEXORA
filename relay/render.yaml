@@ -1,0 +1,43 @@
+# NEXORA WhatsApp agent — Render blueprint
+#
+# One service, one disk. The agent holds your personal WhatsApp linked-device
+# session and polls NEXORA over outbound HTTPS, so it needs no public URL and no
+# firewall rule. NEXORA calls it once, when a pairing starts.
+#
+#   Dashboard → New → Blueprint → pick this repo → Apply
+#
+# Then copy the service URL into Vercel as NEXORA_AGENT_URL and put the same
+# value in NEXORA_AGENT_SECRET on both sides. See relay/HOSTING.md.
+
+services:
+  - type: web
+    name: nexora-whatsapp-agent
+    runtime: node
+    plan: starter
+    region: singapore
+    rootDir: relay
+    buildCommand: npm install --omit=dev
+    startCommand: node agent.mjs
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # Where the app lives. Change if you move off this domain.
+      - key: NEXORA_URL
+        value: https://nexora-zeta-red.vercel.app
+      # Shared secret. `generateValue: true` makes Render mint a strong one on
+      # first deploy; copy the generated value into Vercel as
+      # NEXORA_AGENT_SECRET so both sides agree.
+      - key: NEXORA_AGENT_SECRET
+        generateValue: true
+      # The WhatsApp session lives here and must survive restarts and deploys.
+      # Without a disk every redeploy would force a re-pair.
+      - key: NEXORA_AGENT_DIR
+        value: /var/nexora-agent
+      - key: NEXORA_POLL_MS
+        value: "3000"
+      - key: NODE_VERSION
+        value: "22"
+    disk:
+      name: nexora-agent-session
+      mountPath: /var/nexora-agent
+      sizeGB: 1

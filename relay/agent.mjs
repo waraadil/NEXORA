@@ -38,7 +38,9 @@ import makeWASocket, {
 
 const BASE = (process.env.NEXORA_URL || '').replace(/\/+$/, '');
 const SECRET = process.env.NEXORA_AGENT_SECRET || '';
-const PORT = Number(process.env.NEXORA_AGENT_PORT || 8787);
+// Render (and most PaaS) inject PORT; prefer it so a blueprint needs no
+// duplicated setting, but keep NEXORA_AGENT_PORT for a bare VM.
+const PORT = Number(process.env.PORT || process.env.NEXORA_AGENT_PORT || 8787);
 const ROOT = process.env.NEXORA_AGENT_DIR || join(homedir(), '.nexora-agent');
 const POLL_MS = Number(process.env.NEXORA_POLL_MS || 3000);
 

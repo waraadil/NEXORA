@@ -78,19 +78,27 @@ npm run dev                    # http://localhost:3000
 | `SUPABASE_SERVICE_ROLE_KEY` | yes | Server-only; bypasses RLS for admin operations |
 | `NEXORA_ENCRYPTION_KEY` | yes | 64 hex chars — AES-256-GCM master key |
 | `NEXT_PUBLIC_APP_URL` | prod | Absolute URL used for OAuth redirects |
+| `NEXORA_AGENT_URL` | WhatsApp | Public URL of your hosted agent |
+| `NEXORA_AGENT_SECRET` | WhatsApp | Shared secret; same value on both sides |
 
 Generate a key with `openssl rand -hex 32`.
 
 ### Live WhatsApp (optional)
 
-NEXORA links a personal number through a small local relay, the same mechanism
-as WhatsApp Web's linked devices.
+NEXORA links a personal number through an always-on agent, the same mechanism as
+WhatsApp Web's linked devices. It holds the WhatsApp session and talks to NEXORA
+over outbound HTTPS only, so it needs no public address, no open port and no
+firewall rule.
 
-Pairing is driven entirely from **Integrations → Personal WhatsApp**: type your
-number, consent, and copy the one command the page generates — it already
-carries your server URL and pairing key. Nothing to edit, nothing to install
-beyond Node 20; the launcher downloads and updates itself into
-`~/.nexora-relay`.
+Pairing happens entirely in **Integrations → Personal WhatsApp**: type your
+number, acknowledge the risks, and press *Create pairing code*. The code appears
+on the page — you type it into WhatsApp. Nothing to install, nothing to run in a
+terminal, no shell command anywhere.
+
+Deployment is one blueprint: see [`relay/HOSTING.md`](relay/HOSTING.md) for the
+Render path (a card-free starter with a persistent disk) or a systemd unit for
+your own VPS. The app then needs two variables — `NEXORA_AGENT_URL` and
+`NEXORA_AGENT_SECRET`.
 
 > ⚠️ Automating a personal WhatsApp account breaks WhatsApp's Terms of Service
 > and can get the number permanently banned. The app requires explicit consent
@@ -114,16 +122,22 @@ node scripts/test-auth-e2e.mjs          # 27 checks — auth flows end to end
 node scripts/test-auth-pages.mjs        # 17 checks — auth page behaviour
 node scripts/test-ui.mjs                # 27 checks — layout, a11y, theme, mobile
 node scripts/test-provider-live.mjs     # 21 checks — live provider calls
-node scripts/test-relay.mjs             # 45 checks — WhatsApp relay end to end
-node scripts/test-relay-binary.mjs      #  5 checks — the shipped relay vs real WhatsApp
+node scripts/test-relay.mjs             # 48 checks — WhatsApp link end to end
+node scripts/test-agent-loop.mjs        # 19 checks — the hosted agent contract
+node scripts/test-relay-binary.mjs      #  5 checks — the shipped agent vs real WhatsApp
 ```
 
 Point any browser suite at a running server with `NEXORA_BASE=http://127.0.0.1:3100`.
 
-`test-relay.mjs` pairs a throwaway account through the UI, pushes messages over
-the real HTTP API, asserts attribution and dedupe, generates an actual AI reply,
-delivers it, and revokes the key. `test-relay-binary.mjs` runs the relay binary
-itself and asserts WhatsApp issues a live pairing code.
+`test-relay.mjs` pairs a throwaway account through the UI, asserts that a real
+pairing code renders **in the page** and that no shell command is shown, pushes
+messages over the real HTTP API, checks attribution and dedupe, generates an
+actual AI reply, holds it at the approval gate, releases it, delivers it, and
+revokes access. `test-agent-loop.mjs` drives the agent's own endpoints in the
+agent's order and asserts the durable token upgrade, a live AI reply round trip,
+and that a revoke is distinguishable from a bad token.
+`test-relay-binary.mjs` runs the agent process itself and asserts WhatsApp
+issues a live pairing code.
 
 **Current status: 181 checks passing, 0 failing.**
 

@@ -1,19 +1,16 @@
-# NEXORA relay — live personal WhatsApp
+# NEXORA WhatsApp agent — live personal WhatsApp
 
 Links **your own** WhatsApp number to NEXORA as a linked device, the same way
 WhatsApp Web does. Messages arrive in NEXORA as they are sent, and NEXORA can
 answer them in your voice.
 
-No install, no npm account, no global package:
+There is nothing to install and no terminal in the user-facing flow. The agent
+runs on a host you control, holds the WhatsApp session, and polls NEXORA over
+outbound HTTPS. The pairing code appears **inside NEXORA**; you type it into
+WhatsApp and you are live.
 
-```bash
-NEXORA_URL=https://your-app.vercel.app NEXORA_PAIRING_CODE=nxr_relay_… \
-  node -e "const f=require('os').tmpdir()+'/nexora-relay.mjs';require('https').get('https://raw.githubusercontent.com/waraadil/NEXORA/main/relay/nexora-relay.mjs',r=>{const s=require('fs').createWriteStream(f);r.pipe(s);s.on('finish',()=>require('child_process').spawn(process.execPath,[f],{stdio:'inherit'}).on('exit',c=>process.exit(c||0)))})"
-```
-
-You never type this by hand — NEXORA generates it with your URL and key
-already filled in. It downloads the relay on first run (about a minute),
-then reuses it. State lives in `~/.nexora-relay`.
+> Hosting instructions, including a one-click Render blueprint, are in
+> [HOSTING.md](./HOSTING.md).
 
 ---
 
@@ -23,16 +20,16 @@ then reuses it. State lives in `~/.nexora-relay`.
 2. Enter your number with the country code (`919876543210`).
 3. Tick the four risks, type `I understand the risks`, and press **Create
    pairing code**.
-4. Copy the command the page shows into a terminal. Needs **Node 20+**.
-5. The relay prints an 8-character code.
-6. On your phone: **WhatsApp → Settings → Linked devices → Link a device →
+4. NEXORA shows an 8-character code. The page refreshes itself; you do not
+   press anything.
+5. On your phone: **WhatsApp → Settings → Linked devices → Link a device →
    Link with phone number**, then type that code.
 
-The NEXORA page switches to **linked** within about 20 seconds and starts
-showing messages. Keep the terminal window open — that process is the link.
+The page switches to **linked** on its own and starts showing messages. The
+agent keeps the session, so closing your browser changes nothing.
 
-Closing it stops new messages arriving; restarting with the same command
-reconnects without pairing again.
+To disconnect, press **Disconnect** in NEXORA. The agent is told immediately and
+drops the WhatsApp session.
 
 ## What it does and does not do
 
@@ -60,17 +57,14 @@ Guard rails, all enforced server-side:
 - auto-pauses itself after 5 consecutive send failures
 - **Ask me before sending** mode, which holds drafts in the app for approval
 
-## Restarting later
+## Restarting and reconnecting
 
-Re-run the same command NEXORA generated — it reconnects without pairing
-again. The relay itself lives in `~/.nexora-relay/relay.mjs` if you prefer to
-call it directly.
+Nothing to re-run. The agent reconnects on its own after a restart, and the
+session survives redeploys because it lives on a persistent disk.
 
-Your key is under **Integrations → Personal WhatsApp → Your pairing key**
-(reveal it with the disclosure) or in the command shown on that page. Lost it?
-Disconnect and pair again — it takes a minute.
-
-`node ~/.nexora-relay/relay.mjs --reset` clears the local session and forces a fresh pairing.
+If the link does drop, open **Integrations → Personal WhatsApp** and press
+**Reconnect**. That hands the agent a fresh claim for the number already on
+file; re-pairing only happens if WhatsApp itself removed the device.
 
 ## ⚠️ This can get your number banned
 
@@ -86,14 +80,15 @@ personal number.
 ## How it works
 
 ```
-your phone ── linked device ──▶ relay.mjs (your machine)
-                                     │  POST /api/whatsapp/relay/sync
+your phone ── linked device ──▶ agent.mjs (your host)
+                                     │  POST /api/whatsapp/agent/poll
                                      ▼
                               NEXORA (Next.js + Supabase)
                                      │  AI reply, queued
                                      ▼
-                     POST /api/whatsapp/relay/pending ──▶ relay sends it
+                            replies ride back on the next poll
 ```
 
-The relay polls for outbound work every 4 seconds. A reply that cannot be sent
-while offline stays queued instead of being lost.
+Every connection is outbound, so the agent needs no public address and no
+inbound firewall rule. It polls every few seconds; a reply that cannot be sent
+while the socket is down stays queued instead of being lost.
