@@ -5,6 +5,8 @@ import { createSupabaseServerClient } from '@/lib/supabase/server';
 import { requireOnboardedUser } from '@/lib/auth/guard';
 import { AppShell } from '@/components/app-shell';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { setConversationAutoReply } from '../actions';
 
 export const metadata: Metadata = { title: 'Conversation' };
 
@@ -26,7 +28,9 @@ export default async function ConversationPage({
 
   const { data: conv } = await supabase
     .from('conversations')
-    .select('id, title, source, is_group, message_count, first_message_at, last_message_at, contacts(id, display_name, relationship)')
+    .select(
+      'id, title, source, is_group, message_count, first_message_at, last_message_at, auto_reply_mode, auto_reply_paused_at, auto_reply_paused_reason, contacts(id, display_name, relationship)',
+    )
     .eq('id', id)
     .eq('user_id', user.id) // ownership pinned — a wrong id 404s, never leaks
     .maybeSingle();
@@ -78,6 +82,36 @@ export default async function ConversationPage({
           </Link>
         )}
       </div>
+
+      {/* Who may be answered here. Stated plainly at the top of the person's own
+          conversation, because "the AI replies to some people" is only reassuring
+          when the user can see which. */}
+      {!conv.is_group && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-surface p-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-foreground">
+              AI replies to {conv.title ?? 'this person'}:{' '}
+              <span className={conv.auto_reply_mode === 'on' ? 'text-primary' : 'text-muted-foreground'}>
+                {conv.auto_reply_mode === 'on' ? 'on' : 'off'}
+              </span>
+            </p>
+            <p className="text-xs text-muted-foreground">
+              {conv.auto_reply_paused_at
+                ? (conv.auto_reply_paused_reason ?? 'Paused after too many replies in an hour.')
+                : conv.auto_reply_mode === 'on'
+                  ? 'NEXORA may answer while your phone is away. It never answers first.'
+                  : 'NEXORA will never answer them. Nobody is answered unless you allow it here.'}
+            </p>
+          </div>
+          <form action={setConversationAutoReply}>
+            <input type="hidden" name="conversationId" value={conv.id} />
+            <input type="hidden" name="mode" value={conv.auto_reply_mode === 'on' ? 'off' : 'on'} />
+            <Button type="submit" size="sm" variant={conv.auto_reply_mode === 'on' ? 'outline' : 'primary'}>
+              {conv.auto_reply_mode === 'on' ? 'Stop replying to them' : 'Allow AI replies'}
+            </Button>
+          </form>
+        </div>
+      )}
 
       {hasMore && oldest && (
         <div className="mb-3 text-center">

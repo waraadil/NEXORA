@@ -42,6 +42,8 @@ export type RelayView = {
   requireApproval: boolean;
   delaySeconds: number;
   instructions: string | null;
+  /** 'auto' | 'never' | 'match' — the user's explicit emoji instruction. */
+  emojiPreference: 'auto' | 'never' | 'match';
   paused: boolean;
   pausedReason: string | null;
 };
@@ -731,6 +733,23 @@ function AutoReplyPanel({ relay }: { relay: RelayView }) {
               defaultValue={relay.delaySeconds}
               className="max-w-28"
             />
+          </Field>
+
+          <Field
+            label="Emoji"
+            htmlFor="emoji"
+            hint="What the AI may use when writing as you. It can never overrule this."
+          >
+            <select
+              id="emoji"
+              name="emoji"
+              defaultValue={relay.emojiPreference}
+              className="h-11 w-full rounded-lg border border-border-strong bg-surface px-3 text-sm text-foreground"
+            >
+              <option value="never">Never use emoji</option>
+              <option value="auto">At most one, only if it fits</option>
+              <option value="match">Only if the other person used one</option>
+            </select>
           </Field>
 
           <Field

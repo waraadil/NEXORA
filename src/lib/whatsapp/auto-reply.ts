@@ -3,6 +3,8 @@ import { createSupabaseAdminClient } from '@/lib/supabase/server';
 import { getActiveCredentialForUser, callProvider } from '@/lib/ai/credentials';
 import { loadStyleBrief } from '@/lib/ai/intelligence';
 import { replyPrompt, renderTranscript, parseJsonResponse } from '@/lib/ai/prompts';
+import { canAutoReply, MAX_PER_CONVERSATION_PER_HOUR } from '@/lib/whatsapp/auto-reply-scope';
+import { applyEmojiPolicy, emojiInstruction, type EmojiPreference } from '@/lib/whatsapp/emoji';
 
 /**
  * AUTO-REPLY — NEXORA answers WhatsApp on the user's behalf.
@@ -11,10 +13,13 @@ import { replyPrompt, renderTranscript, parseJsonResponse } from '@/lib/ai/promp
  * speaking in the user's voice to their real contacts:
  *
  *  1. Direct chats only. Never groups, never broadcast/status.
- *  2. Opt-in. Nothing happens unless the user turned it on.
+ *  2. Opt-in per person, not just per account. Turning auto-reply on answers
+ *     nobody; the user must add each contact to the list. The default is
+ *     silence, because an unwanted message cannot be recalled.
  *  3. One answer per message, claimed atomically (several relay instances and
  *     the poll loop can run at once).
- *  4. Stands down if the user already replied from their phone.
+ *  4. Stands down if the user already replied from their phone — checked again
+ *     immediately before queuing, not just before drafting.
  *  5. Rate limited per conversation *and* per account, so an auto-responder on
  *     the other side cannot start a machine-to-machine loop.
  *  6. Conservative content rules in the prompt: no commitments, no OTPs, no
@@ -22,7 +27,7 @@ import { replyPrompt, renderTranscript, parseJsonResponse } from '@/lib/ai/promp
  *  7. Auto-pauses itself after repeated failures instead of retrying forever.
  */
 
-export const MAX_PER_CONVERSATION_PER_HOUR = 6;
+export { MAX_PER_CONVERSATION_PER_HOUR };
 export const MAX_PER_USER_PER_HOUR = 40;
 export const CLAIM_STALE_MS = 5 * 60 * 1000;
 
@@ -121,6 +126,31 @@ export async function planAutoReplies(params: {
   return { queued, skipped };
 }
 
+/**
+ * Has the user answered this conversation themselves since `sinceIso`?
+ *
+ * Deliberately strict about one thing: a message the *relay* sent on the user's
+ * behalf does not count as the user replying. The relay writes rows with
+ * is_from_me = true for both, so counting them would let the machine conclude
+ * "a human is handling this" after its own message and go quiet.
+ */
+async function userRepliedSince(
+  admin: ReturnType<typeof createSupabaseAdminClient>,
+  userId: string,
+  conversationId: string,
+  sinceIso: string,
+): Promise<boolean> {
+  const { data } = await admin
+    .from('messages')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('conversation_id', conversationId)
+    .eq('is_from_me', true)
+    .gt('sent_at', sinceIso)
+    .limit(1);
+  return !!data?.length;
+}
+
 async function handleOne(
   admin: ReturnType<typeof createSupabaseAdminClient>,
   ctx: {
@@ -148,27 +178,19 @@ async function handleOne(
   // ── Conversation gate: direct chats only ────────────────────────────────
   const { data: conv } = await admin
     .from('conversations')
-    .select('id, title, is_group, wa_chat_id, contact_id')
+    .select(
+      'id, title, is_group, wa_chat_id, contact_id, auto_reply_mode, auto_reply_paused_at, auto_reply_paused_reason',
+    )
     .eq('id', message.conversation_id)
     .eq('user_id', userId)
     .maybeSingle();
 
   if (!conv) return skip('conversation missing', 'failed');
-  if (conv.is_group) return skip('group chats are never auto-answered');
   if (!conv.wa_chat_id || !String(conv.wa_chat_id).includes('@')) return skip('not a live WhatsApp chat');
 
   // ── Did the user already answer this themselves? ────────────────────────
   const sentAt = message.sent_at ?? new Date().toISOString();
-  const { data: later } = await admin
-    .from('messages')
-    .select('id')
-    .eq('user_id', userId)
-    .eq('conversation_id', conv.id)
-    .eq('is_from_me', true)
-    .gt('sent_at', sentAt)
-    .limit(1);
-
-  if (later?.length) return skip('you already replied');
+  if (await userRepliedSince(admin, userId, conv.id, sentAt)) return skip('you already replied');
 
   // ── Rate limits ─────────────────────────────────────────────────────────
   const hourAgo = new Date(now - 60 * 60 * 1000).toISOString();
@@ -189,9 +211,24 @@ async function handleOne(
       .gte('created_at', hourAgo),
   ]);
 
-  if ((convCount ?? 0) >= MAX_PER_CONVERSATION_PER_HOUR) {
-    return skip(`rate limit: ${MAX_PER_CONVERSATION_PER_HOUR} auto-replies per chat per hour`);
-  }
+  // ── Per-person allowlist ────────────────────────────────────────────────
+  // The gate that matters most. Reaching this line means the user has a live
+  // WhatsApp link and auto-reply switched on — but that is consent to have the
+  // *feature* running, not consent to answer any particular human. Without an
+  // explicit "on" for this conversation, we say nothing. Group chats are
+  // re-checked inside canAutoReply rather than trusted from above.
+  const scope = canAutoReply({
+    isGroup: !!conv.is_group,
+    conversation: {
+      auto_reply_mode: (conv.auto_reply_mode as 'off' | 'on') ?? 'off',
+      auto_reply_paused_at: (conv.auto_reply_paused_at as string | null) ?? null,
+      auto_reply_paused_reason: (conv.auto_reply_paused_reason as string | null) ?? null,
+    },
+    usedThisHour: convCount ?? 0,
+    globallyEnabled: true, // checked at the top of planAutoReplies
+  });
+  if (!scope.allowed) return skip(scope.detail);
+
   if ((userCount ?? 0) >= MAX_PER_USER_PER_HOUR) {
     return skip(`rate limit: ${MAX_PER_USER_PER_HOUR} auto-replies per hour`);
   }
@@ -228,6 +265,24 @@ async function handleOne(
     /* a missing style profile is not fatal */
   }
 
+  // The user's explicit emoji instruction outranks anything inferred. Read it
+  // separately from the brief so a missing profile degrades to 'auto' (the
+  // conservative ceiling of one) rather than to "no policy at all".
+  let emojiPreference: EmojiPreference = 'auto';
+  try {
+    const { data: prefs } = await admin
+      .from('user_style_profiles')
+      .select('emoji_preference')
+      .eq('user_id', userId)
+      .maybeSingle();
+    const p = prefs?.emoji_preference as EmojiPreference | undefined;
+    if (p === 'never' || p === 'match' || p === 'auto') emojiPreference = p;
+  } catch {
+    /* keep the ceiling */
+  }
+
+  const incoming = (message.body as string) ?? '';
+
   let draft: string;
   try {
     const result = await callProvider(
@@ -238,7 +293,9 @@ async function handleOne(
         relationship,
         relationshipDetail,
         style,
-        userInstructions: [SAFETY_INSTRUCTIONS, ctx.instructions].filter(Boolean).join('\n\n'),
+        userInstructions: [SAFETY_INSTRUCTIONS, emojiInstruction(emojiPreference, incoming), ctx.instructions]
+          .filter(Boolean)
+          .join('\n\n'),
         count: 1,
       }),
       { temperature: 0.6, maxTokens: 300 },
@@ -247,10 +304,20 @@ async function handleOne(
     const parsed = parseJsonResponse<{ replies: { text: string; angle: string }[] }>(result.text);
     const text = parsed?.replies?.[0]?.text?.trim();
     if (!text) return skip('model returned no usable reply', 'failed');
-    draft = text.slice(0, 1000);
+    // The prompt asked; this is the guarantee. Whatever the model wrote, what
+    // leaves here obeys the user's emoji preference.
+    draft = applyEmojiPolicy({ text, preference: emojiPreference, incoming }).text.slice(0, 1000);
+    if (!draft.trim()) return skip('reply was empty after removing emoji', 'failed');
   } catch (e) {
     return skip(`model error: ${(e as Error).message}`, 'failed');
   }
+
+  // ── Last look before it leaves ──────────────────────────────────────────
+  // Drafting takes a model round trip, and the user is very likely holding the
+  // phone at that moment. Checking only before drafting meant a reply written
+  // over the user's own answer still went out. If they have said anything since
+  // this message arrived, they are handling it and the draft is thrown away.
+  if (await userRepliedSince(admin, userId, conv.id, sentAt)) return skip('you already replied');
 
   // ── Queue it for the relay ──────────────────────────────────────────────
   // The pause is measured from when the reply is READY, not from when drafting

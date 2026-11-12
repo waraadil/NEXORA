@@ -533,13 +533,55 @@ try {
     .single();
   onRun.auto_reply_enabled === true ? ok('setting persisted', `delay ${onRun.auto_reply_delay_seconds}s`) : no('setting not persisted');
 
-  // A new inbound message should now produce an AI reply.
-  const sync4 = await api(
+  // A new inbound message should now produce an AI reply — but ONLY because
+  // this person has been explicitly allowed. Turning auto-reply on is not
+  // permission to answer anyone; the per-conversation switch is.
+  //
+  // First prove the default still holds: with the person not on the list,
+  // nothing may be written. This is the regression that was reported from a
+  // real phone ("it replied to my partner"), so it is checked before the happy
+  // path rather than assumed.
+  await admin.from('conversations').update({ auto_reply_mode: 'off' }).eq('user_id', userId).eq('wa_chat_id', convoJid);
+  const syncBlocked = await api(
     '/api/whatsapp/relay/sync',
     {
       chat: { id: convoJid, name: 'Priya Sharma', isGroup: false },
       messages: [
         { id: 'TESTMSG004', isGroup: false, fromMe: false, senderName: 'Priya Sharma', body: 'perfect, bringing snacks too?', timestamp: Math.floor(Date.now() / 1000) },
+      ],
+    },
+    pairingKey,
+  );
+  const { data: blockedRows } = await admin
+    .from('whatsapp_outbound')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('source', 'auto_reply');
+  const { data: blockedWhy } = await admin
+    .from('messages')
+    .select('auto_reply_state, auto_reply_error')
+    .eq('user_id', userId)
+    .eq('provider_message_id', 'TESTMSG004')
+    .maybeSingle();
+
+  (blockedRows?.length ?? 0) === 0
+    ? ok('nobody is answered until explicitly allowed')
+    : no('replied to a contact who was never allowed', JSON.stringify(blockedRows));
+  /not on the auto-reply list/.test(blockedWhy?.auto_reply_error ?? '')
+    ? ok('and says why', blockedWhy?.auto_reply_error)
+    : no('wrong reason for staying silent', JSON.stringify(blockedWhy));
+
+  // Now allow this one person. The next message is a NEW id on purpose:
+  // re-posting TESTMSG004 would be a duplicate and nothing new would be planned,
+  // which would look like a failure of the allowlist rather than of the test.
+  await admin.from('conversations').update({ auto_reply_mode: 'on' }).eq('user_id', userId).eq('wa_chat_id', convoJid);
+
+  const sync4 = await api(
+    '/api/whatsapp/relay/sync',
+    {
+      chat: { id: convoJid, name: 'Priya Sharma', isGroup: false },
+      messages: [
+        { id: 'TESTMSG005', isGroup: false, fromMe: false, senderName: 'Priya Sharma', body: 'perfect, bringing snacks too?', timestamp: Math.floor(Date.now() / 1000) },
       ],
     },
     pairingKey,
@@ -607,7 +649,7 @@ try {
       .from('messages')
       .select('auto_reply_state, auto_reply_error, body')
       .eq('user_id', userId)
-      .eq('provider_message_id', 'TESTMSG004')
+      .eq('provider_message_id', 'TESTMSG005')
       .maybeSingle();
     // The AI half of this suite depends on a third party answering. When the
     // provider is overloaded or slow, the app's own behaviour is still correct —
@@ -628,7 +670,7 @@ try {
     .from('messages')
     .select('auto_reply_state, auto_reply_error')
     .eq('user_id', userId)
-    .eq('provider_message_id', 'TESTMSG004')
+    .eq('provider_message_id', 'TESTMSG005')
     .maybeSingle();
   repliedState?.auto_reply_state === 'replied'
     ? ok('triggering message marked replied')

@@ -97,7 +97,20 @@ export default async function IntegrationsPage() {
   // The owner's own key, so a refresh never strands a pairing in progress.
   const relayKey = status === 'waiting' ? await revealRelayKey(user.id) : null;
 
-  const view = { ...relay, status, relayKey };
+  // Emoji preference lives on the style profile (it is about how the user
+  // writes, not how WhatsApp is configured), so it is read separately and
+  // merged in here rather than being part of describeRelay's row.
+  const { data: stylePrefs } = await supabase
+    .from('user_style_profiles')
+    .select('emoji_preference')
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  const storedEmoji = stylePrefs?.emoji_preference as string | undefined;
+  const emojiPreference: 'auto' | 'never' | 'match' =
+    storedEmoji === 'never' || storedEmoji === 'match' ? storedEmoji : 'auto';
+
+  const view = { ...relay, status, relayKey, emojiPreference };
 
   return (
     <AppShell title="Integrations" subtitle="Connect WhatsApp to NEXORA">

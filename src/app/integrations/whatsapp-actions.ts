@@ -201,6 +201,8 @@ export async function updateAutoReply(formData: FormData): Promise<PairingState 
   const instructions = String(formData.get('instructions') ?? '').trim();
 
   const delay = Number.isFinite(delayRaw) ? Math.min(Math.max(Math.round(delayRaw), 0), 120) : 4;
+  const emojiRaw = String(formData.get('emoji') ?? 'auto');
+  const emoji = emojiRaw === 'never' || emojiRaw === 'match' ? emojiRaw : 'auto';
 
   const admin = createSupabaseAdminClient();
   const { error } = await admin
@@ -218,6 +220,14 @@ export async function updateAutoReply(formData: FormData): Promise<PairingState 
     .eq('user_id', user.id);
 
   if (error) return { error: 'Could not save auto-reply settings.' };
+
+  // Emoji preference lives on the style profile (it is a writing preference,
+  // not a WhatsApp setting), so it is saved separately and deliberately not
+  // treated as fatal for the main save above.
+  await admin.from('user_style_profiles').upsert(
+    { user_id: user.id, emoji_preference: emoji, updated_at: new Date().toISOString() },
+    { onConflict: 'user_id' },
+  );
 
   revalidatePath('/integrations');
   return { success: enabled ? 'Auto-reply is on.' : 'Auto-reply is off.' };

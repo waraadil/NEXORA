@@ -41,7 +41,9 @@ export default async function ConversationsPage() {
 
   const { data: conversations } = await supabase
     .from('conversations')
-    .select('id, title, source, is_group, message_count, first_message_at, last_message_at, contacts(display_name, relationship)')
+    .select(
+      'id, title, source, is_group, message_count, first_message_at, last_message_at, auto_reply_mode, contacts(display_name, relationship)',
+    )
     .eq('user_id', user.id)
     .order('last_message_at', { ascending: false, nullsFirst: false });
 
@@ -122,6 +124,13 @@ export default async function ConversationsPage() {
                     <span className="flex items-center gap-2">
                       <span className="truncate text-sm font-medium">{c.title ?? 'Untitled'}</span>
                       {c.is_group && <Badge tone="neutral">group</Badge>}
+                      {/* Visible per row so "who does it answer?" is answerable
+                          without opening each conversation. */}
+                      {!c.is_group && c.auto_reply_mode === 'on' && (
+                        <span title="NEXORA may answer this person">
+                          <Badge tone="success">AI on</Badge>
+                        </span>
+                      )}
                       <span title={src.title}>
                         <Badge tone={src.tone}>{src.label}</Badge>
                       </span>

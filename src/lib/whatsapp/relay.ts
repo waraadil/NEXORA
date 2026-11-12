@@ -260,6 +260,7 @@ export type RelayState = {
   requireApproval: boolean;
   delaySeconds: number;
   instructions: string | null;
+  emojiPreference: 'auto' | 'never' | 'match';
   paused: boolean;
   pausedReason: string | null;
 };
@@ -281,6 +282,7 @@ export function describeRelay(row: Record<string, unknown> | null): RelayState {
     requireApproval: false,
     delaySeconds: 4,
     instructions: null,
+    emojiPreference: 'auto',
     paused: false,
     pausedReason: null,
   };
@@ -336,6 +338,12 @@ export function describeRelay(row: Record<string, unknown> | null): RelayState {
     autoReplyEnabled: !!row.auto_reply_enabled,
     requireApproval: !!row.auto_reply_require_approval,
     delaySeconds: (row.auto_reply_delay_seconds as number | null) ?? 4,
+    emojiPreference:
+      ((row.emoji_preference as string | null) === 'never'
+        ? 'never'
+        : (row.emoji_preference as string | null) === 'match'
+          ? 'match'
+          : 'auto') as 'auto' | 'never' | 'match',
     instructions: (row.auto_reply_instructions as string | null) ?? null,
     paused: !!row.auto_reply_paused_at,
     pausedReason: (row.auto_reply_paused_reason as string | null) ?? null,

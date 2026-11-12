@@ -187,3 +187,49 @@ export async function embeddingAvailability(): Promise<boolean> {
   if (!user) return false;
   return (await getEmbeddingCredential(user.id)) !== null;
 }
+
+/**
+ * Turn AI auto-reply on or off for ONE person.
+ *
+ * Deliberately per-conversation rather than a global switch with exceptions,
+ * because the failure mode of the other design is a bot speaking to a stranger.
+ * Groups can never be switched on, and the check happens server-side so the UI
+ * cannot be talked into it.
+ */
+export async function setConversationAutoReply(formData: FormData): Promise<void> {
+  const { supabase, user } = await requireUser();
+  if (!user) return;
+
+  const conversationId = String(formData.get('conversationId') ?? '').trim();
+  const mode = String(formData.get('mode') ?? '') === 'on' ? 'on' : 'off';
+  if (!conversationId) return;
+
+  // Read first: a group must be refused even if a crafted request says 'on',
+  // and clearing a paused chat is only right when the user is re-enabling it.
+  const { data: conv } = await supabase
+    .from('conversations')
+    .select('id, is_group')
+    .eq('id', conversationId)
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  if (!conv || conv.is_group) return;
+
+  const { error } = await supabase
+    .from('conversations')
+    .update({
+      auto_reply_mode: mode,
+      // Re-enabling after a rate-limit pause should actually resume; leaving the
+      // pause set would make the toggle look broken.
+      auto_reply_paused_at: mode === 'on' ? null : undefined,
+      auto_reply_paused_reason: mode === 'on' ? null : undefined,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', conversationId)
+    .eq('user_id', user.id);
+
+  if (error) return;
+
+  revalidatePath('/conversations');
+  revalidatePath(`/conversations/${conversationId}`);
+}
