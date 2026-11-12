@@ -181,6 +181,26 @@ export async function revokeAgent(userId: string): Promise<void> {
 }
 
 /**
+ * Resolve a DURABLE agent token only. Claims are deliberately rejected: resuming
+ * existing links is not a pairing, and a 15-minute claim must never be able to
+ * enumerate somebody's links.
+ */
+export async function resolveDurableAgentToken(token: string): Promise<AgentContext | null> {
+  if (!token?.startsWith('nxr_agent_')) return null;
+  const admin = createSupabaseAdminClient();
+  const hash = sha256(token);
+  const { data } = await admin
+    .from('whatsapp_integrations')
+    .select('id, user_id, agent_token_hash, agent_revoked_at')
+    .eq('agent_token_hash', hash)
+    .maybeSingle();
+  if (!data?.agent_token_hash) return null;
+  if (!constantTimeEqual(hash, data.agent_token_hash as string)) return null;
+  if (data.agent_revoked_at) return null;
+  return { userId: data.user_id as string, integrationId: data.id as string, via: 'agent' };
+}
+
+/**
  * Was this exact token revoked by its owner?
  *
  * The agent needs a truthful answer when it gets a 401: revoked means shut the

@@ -1,18 +1,22 @@
 /**
- * Proves the SHIPPED relay binary works against real WhatsApp.
+ * Proves the SHIPPED agent works against real WhatsApp.
  *
- * It pairs the real relay process to a real number (this test never learns the
- * number: the browser supplies it, exactly as a user's would), waits for the
- * pairing code WhatsApp issues, and checks that NEXORA recorded the device.
+ * It runs the real agent process, pairs it to a real number (the browser
+ * supplies the number, exactly as a user's would), waits for the pairing code
+ * WhatsApp issues, and checks that NEXORA recorded the device.
  *
  * A human must type the code into WhatsApp on the phone. Everything up to that
  * point — and the "it never connected" honesty afterwards — is verified here.
  *
- *   NEXORA_BASE=https://nexora-zeta-red.vercel.app \
+ *   NEXORA_AGENT_URL=http://127.0.0.1:8899 NEXORA_AGENT_SECRET=... \
+ *   NEXORA_BASE=http://127.0.0.1:3100 \
  *   NEXORA_TEST_PHONE=91XXXXXXXXXX node scripts/test-relay-binary.mjs
+ *
+ * The terminal relay (relay/relay.mjs) is NOT used: the product no longer asks
+ * anyone to run a command, so this test must not either. It drives the same
+ * host-side agent that Render runs.
  */
 import { readFileSync } from 'node:fs';
-import { spawn } from 'node:child_process';
 import { createClient } from '@supabase/supabase-js';
 import { chromium } from 'playwright';
 
@@ -41,7 +45,6 @@ await admin.from('profiles').upsert({ id: userId, email, display_name: 'Relay Bi
 
 const b = await chromium.launch({ args: ['--no-sandbox'] });
 const page = await (await b.newContext()).newPage();
-let key = null;
 
 try {
   await page.goto(`${BASE}/login`, { waitUntil: 'networkidle' });
@@ -58,48 +61,45 @@ try {
     await page.locator(`input[name="ack"][value="${k}"]`).check();
   await page.locator('#confirm').fill('I understand the risks');
   await page.getByRole('button', { name: 'Create pairing code' }).click();
-  await page.getByText('Finish linking').waitFor({ timeout: 25000 });
+  await page.getByText('Enter this code in WhatsApp').waitFor({ timeout: 45000 });
   ok('pairing window opened through the UI');
 
-  const cmd = await page.locator('code').first().innerText();
-  key = cmd.match(/NEXORA_PAIRING_CODE=(\S+)/)?.[1];
-  if (!key) throw new Error('no key in command');
-  ok('command carries a key', `${key.slice(0, 16)}…`);
-
-  // Run the shipped relay exactly as the user would.
-  const relay = spawn('node', ['relay/relay.mjs'], {
-    env: { ...process.env, NEXORA_URL: BASE, NEXORA_PAIRING_CODE: key, NEXORA_AUTH_DIR: `/tmp/relaytest-${Date.now()}` },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  let out = '';
-  relay.stdout.on('data', (d) => { out += d; process.stdout.write(`      relay │ ${d}`); });
-  relay.stderr.on('data', (d) => { out += d; });
+  // The agent runs on the host, not here. Its log is the proof that WhatsApp
+  // issued a code — the page only mirrors what the agent posts back.
+  const agentUrl = process.env.NEXORA_AGENT_URL?.replace(/\/+$/, '');
+  if (!agentUrl) throw new Error('Set NEXORA_AGENT_URL to the running agent');
 
   const deadline = Date.now() + 75000;
   let code = null;
   while (Date.now() < deadline) {
-    const m = out.match(/pairing code:\s*([A-Z0-9]{4}-?[A-Z0-9]{4})/i);
+    const body = await page.locator('body').innerText();
+    const m = body.match(/\b([A-Z0-9]{4}-[A-Z0-9]{4})\b/);
     if (m) { code = m[1]; break; }
-    if (/pairing code request failed/i.test(out)) break;
-    await new Promise((r) => setTimeout(r, 500));
+    const agentHealth = await fetch(`${agentUrl}/health`).then((r) => r.json()).catch(() => null);
+    if (agentHealth?.links?.some((l) => l.pairingCode)) {
+      code = agentHealth.links.find((l) => l.pairingCode).pairingCode;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 1500));
   }
 
   if (code) ok('WhatsApp issued a live pairing code', code);
-  else if (/pairing code request failed/i.test(out)) no('pairing code request failed', out.split('\n').filter(l=>/failed/i.test(l)).join(' ').slice(0,200));
   else no('no pairing code issued in 75s');
 
   // Without the code being typed on the phone it must NOT claim to be linked.
-  await page.reload({ waitUntil: 'networkidle' });
-  const stillWaiting = await page.getByText('Finish linking').count();
-  stillWaiting > 0 ? ok('UI stays honest: still "finish linking", not "linked"') : no('UI claimed success before pairing');
+  // Not `networkidle`: the waiting card refreshes itself every 2.5s by design,
+  // so the network never goes idle and a networkidle wait times out on a page
+  // that is working perfectly.
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.getByText('Enter this code in WhatsApp').waitFor({ timeout: 20000 }).catch(() => {});
+  const stillWaiting = await page.getByText('Enter this code in WhatsApp').count();
+  stillWaiting > 0 ? ok('UI stays honest: still waiting for the code, not "linked"') : no('UI claimed success before pairing');
 
   const { data: row } = await admin.from('whatsapp_integrations').select('status, bridge_session_state, bridge_pairing_phone').eq('user_id', userId).single();
   row.status === 'pending' && row.bridge_session_state === 'pairing'
     ? ok('DB records pairing in progress, not connected', row.bridge_pairing_phone)
     : no('DB state wrong', JSON.stringify(row));
 
-  relay.kill('SIGTERM');
-  await new Promise((r) => setTimeout(r, 800));
 } catch (e) {
   no('crashed', e.message);
 } finally {

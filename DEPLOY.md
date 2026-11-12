@@ -58,7 +58,8 @@ in the flow — a test asserts exactly that.
 1. Open **https://dashboard.render.com/blueprints**
 2. Click **New Blueprint Instance**
 3. Choose the **NEXORA** repository (`waraadil/NEXORA`) and branch `main`
-4. Render reads `render.yaml` at the repository root: one web service, one 1 GB disk
+4. Render reads `render.yaml` at the repository root: one **free** web service, no
+disk. Nothing to pay for, no card needed.
 5. Click **Apply** and wait for the first build (~2 minutes)
 
 ### 2. Copy two values from Render
@@ -84,12 +85,24 @@ it if Render generated its own. Then redeploy (Git → Redeploy, or push anythin
 verify the whole flow against production myself — including a real pairing code
 in the page.
 
-### A note on Render's free plan
+### Why the free plan is now enough
 
-The free instance sleeps after ~15 minutes idle, which drops the WhatsApp
-socket. The agent reconnects when it wakes, but messages sent while it sleeps
-arrive late. The **Starter** plan ($7/month) keeps it up around the clock, which
-is what a 24/7 assistant needs. No code changes — flip the plan.
+Render's free instances cannot attach a disk at all — that was the thing asking
+for money, not the compute. The disk was never load-bearing: the WhatsApp
+session is already stored encrypted in Supabase, and the agent now asks
+`/api/whatsapp/agent/links` which links it should hold whenever it boots. So a
+free instance that loses its filesystem comes back **linked**, with no re-pair.
+That is proven by `scripts/test-agent-resume.mjs`, which deletes the agent's
+directory, restarts it with only `NEXORA_AGENT_TOKEN` in the environment, and
+asserts the link returns and the log says `↻ resuming …`.
+
+The one real limit left: a free instance sleeps after ~15 minutes with no
+inbound traffic, which drops the socket. `GET /api/whatsapp/agent/wake` exists
+to prevent exactly that — it pings the agent's `/health` and is safe for any
+caller to hit. `vercel.json` schedules it twice a day, which is **not** enough
+on its own (Vercel Hobby crons are daily-only). Until an external pinger runs
+every ~10 minutes, expect the agent to be asleep after 15 idle minutes and to
+wake on the next visit to the app.
 
 ---
 

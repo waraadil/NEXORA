@@ -47,6 +47,16 @@ const POLL_MS = Number(process.env.NEXORA_POLL_MS || 3000);
 /** How many times a *never-linked* pairing may retry before giving up. */
 const MAX_PAIR_ATTEMPTS = Number(process.env.NEXORA_PAIR_ATTEMPTS || 3);
 
+/**
+ * Optional durable agent token, for a host with no disk.
+ *
+ * Once a link is established the app issues an `nxr_agent_…` token and the
+ * agent would normally keep it in a file next to the session. A free Render
+ * instance wipes that file on every restart, so the token can be supplied here
+ * instead and the agent asks NEXORA which links to bring back.
+ */
+const ENV_AGENT_TOKEN = (process.env.NEXORA_AGENT_TOKEN || '').trim();
+
 const log = (...a) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...a);
 
 if (!BASE || !SECRET) {
@@ -339,6 +349,10 @@ class Link {
       this.token = res.agentToken;
       log('✓ adopted: durable agent token issued');
       await this.saveToken(res.agentToken);
+      // On a host without a disk this is the line that matters: without the
+      // token being available at boot, a restart cannot find the link again.
+      log('  → set NEXORA_AGENT_TOKEN on this host to the value below so it can resume after a restart:');
+      console.log(res.agentToken);
     }
 
     for (const reply of res.replies ?? []) {
@@ -392,8 +406,14 @@ class Link {
   }
 
   async saveToken(token) {
-    await mkdir(ROOT, { recursive: true });
-    await writeFile(join(ROOT, `${this.userId}.token`), token, { mode: 0o600 });
+    try {
+      await mkdir(ROOT, { recursive: true });
+      await writeFile(join(ROOT, `${this.userId}.token`), token, { mode: 0o600 });
+    } catch (e) {
+      // No disk (a free tier): the token came from NEXORA_AGENT_TOKEN, so losing
+      // the copy costs nothing as long as the operator stored it there.
+      log(`! could not cache token on disk (${e.code ?? e.message}) — relying on NEXORA_AGENT_TOKEN`);
+    }
   }
 
   stop() {
@@ -543,20 +563,62 @@ server.listen(PORT, '0.0.0.0', () => {
 
 /** Restore links that were alive before a restart, so nothing waits for a click. */
 async function restore() {
+  // ── Authoritative source: the app ──────────────────────────────────────
+  // Ask which links this agent should hold, rather than trusting local files
+  // that a diskless host has just erased. This is what makes a free tier work.
+  const tokens = new Set();
+  if (ENV_AGENT_TOKEN) tokens.add(ENV_AGENT_TOKEN);
+
+  const fromDisk = [];
   try {
     const { readdir } = await import('node:fs/promises');
-    const files = await readdir(ROOT);
-    for (const f of files.filter((n) => n.endsWith('.token'))) {
-      const userId = f.replace(/\.token$/, '');
-      const token = (await readFile(join(ROOT, f), 'utf8')).trim();
-      if (!token) continue;
-      const link = new Link({ userId, claim: token, phone: null });
-      live.set(userId, link);
-      link.start().catch((e) => log(`restore ${userId} failed:`, e.message));
+    for (const f of await readdir(ROOT)) {
+      if (!f.endsWith('.token')) continue;
+      const saved = (await readFile(join(ROOT, f), 'utf8')).trim();
+      if (saved) {
+        tokens.add(saved);
+        fromDisk.push(f);
+      }
     }
-    if (files.length) log(`restored ${files.filter((n) => n.endsWith('.token')).length} link(s)`);
   } catch {
-    /* first run */
+    /* no disk, or first run */
+  }
+
+  const seen = new Set();
+  for (const token of tokens) {
+    let res;
+    try {
+      res = await fetch(`${BASE}/api/whatsapp/agent/links`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+    } catch (e) {
+      log(`! could not ask ${BASE} which links to restore: ${e.message}`);
+      continue;
+    }
+    if (res.status === 401) {
+      log('! a stored agent token is no longer valid — skipping it');
+      continue;
+    }
+    if (!res.ok) {
+      log(`! links lookup returned HTTP ${res.status}`);
+      continue;
+    }
+
+    const body = await res.json().catch(() => null);
+    for (const link of body?.links ?? []) {
+      // One live link per user, whichever token found it.
+      if (seen.has(link.userId) || live.has(link.userId)) continue;
+      seen.add(link.userId);
+
+      const entry = new Link({ userId: link.userId, claim: token, phone: link.phone ?? null });
+      live.set(link.userId, entry);
+      entry.start().catch((e) => log(`restore ${link.userId} failed:`, e.message));
+      log(`↻ resuming ${link.phone ?? link.userId} (${link.state})`);
+    }
+  }
+
+  if (seen.size === 0) {
+    log(fromDisk.length ? 'restored 0 link(s) — nothing active on the app side' : 'nothing to restore — waiting for a pairing');
   }
 }
 

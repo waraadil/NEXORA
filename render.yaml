@@ -1,19 +1,32 @@
-# NEXORA WhatsApp agent — Render blueprint
+# NEXORA WhatsApp agent — Render blueprint (FREE tier, $0/month)
 #
 # Render only discovers a Blueprint by a file named render.yaml at the ROOT of
-# the repository. This file lives here for that reason; the service itself runs
-# from relay/ via rootDir below.
+# the repository.
 #
-#   Dashboard → New → Blueprint → pick this repo → Apply
+# ── Why this is free and the earlier version was not ──────────────────────
+# The previous file asked for `plan: starter` ($7/mo) plus a 1 GB disk, because
+# free instances cannot attach disks. The disk turned out to be unnecessary:
+# the WhatsApp session is stored in Supabase, encrypted, and the agent asks
+# NEXORA which links to resume after every restart. So nothing needs a disk.
 #
-# Then copy the service URL into Vercel as NEXORA_AGENT_URL, and the generated
-# secret as NEXORA_AGENT_SECRET. See relay/HOSTING.md.
+# ── What you accept on the free tier ─────────────────────────────────────
+# Render spins a free service down after 15 minutes without inbound traffic.
+# This blueprint sets the keep-alive ON, which polls the agent every 10 minutes
+# from Render's own infrastructure — that keeps the 15-minute idle counter from
+# ever reaching zero, so the WhatsApp socket stays up around the clock.
+#
+# Free workspaces get 750 instance hours a month; a month is ~720-744, so one
+# always-on free service just fits. Render suspends free services for the rest
+# of the month if the allowance runs out — the agent resumes the link when it
+# comes back, and no message is lost because the app queues replies.
+#
+# If keep-alive ever proves unreliable, the honest fix is Starter at $7/mo.
 
 services:
   - type: web
     name: nexora-whatsapp-agent
     runtime: node
-    plan: starter
+    plan: free
     region: singapore
     branch: main
     # The agent's own code and package.json live here.
@@ -30,15 +43,15 @@ services:
       # value into Vercel as NEXORA_AGENT_SECRET so both sides agree.
       - key: NEXORA_AGENT_SECRET
         generateValue: true
-      # The WhatsApp session lives here and must survive restarts and deploys.
-      # Without a disk every redeploy would force a re-pair.
+      # Persist whatever the process can (a free instance has no disk, so this
+      # is best-effort — the session's real home is Supabase).
       - key: NEXORA_AGENT_DIR
-        value: /var/nexora-agent
+        value: /tmp/nexora-agent
       - key: NEXORA_POLL_MS
         value: "3000"
+      # The keep-alive pings this path every 10 minutes so the service never
+      # reaches Render's 15-minute idle point.
+      - key: NEXORA_KEEPALIVE_PATH
+        value: /health
       - key: NODE_VERSION
         value: "22"
-    disk:
-      name: nexora-agent-session
-      mountPath: /var/nexora-agent
-      sizeGB: 1

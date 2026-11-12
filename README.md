@@ -123,9 +123,11 @@ node scripts/test-auth-e2e.mjs          # 27 checks — auth flows end to end
 node scripts/test-auth-pages.mjs        # 17 checks — auth page behaviour
 node scripts/test-ui.mjs                # 27 checks — layout, a11y, theme, mobile
 node scripts/test-provider-live.mjs     # 21 checks — live provider calls
-node scripts/test-relay.mjs             # 48 checks — WhatsApp link end to end
+node scripts/test-relay.mjs             # 46 checks — relay HTTP path (+2 agent skips)
 node scripts/test-agent-loop.mjs        # 19 checks — the hosted agent contract
-node scripts/test-relay-binary.mjs      #  5 checks — the shipped agent vs real WhatsApp
+node scripts/test-agent-resume.mjs      # 16 checks — resume after a diskless restart
+node scripts/test-relay-binary.mjs      #  4 checks — the shipped agent vs real WhatsApp
+node scripts/test-agent.mjs             #  9 checks — the whole flow in a real browser
 ```
 
 Point any browser suite at a running server with `NEXORA_BASE=http://127.0.0.1:3100`.
@@ -137,10 +139,23 @@ actual AI reply, holds it at the approval gate, releases it, delivers it, and
 revokes access. `test-agent-loop.mjs` drives the agent's own endpoints in the
 agent's order and asserts the durable token upgrade, a live AI reply round trip,
 and that a revoke is distinguishable from a bad token.
-`test-relay-binary.mjs` runs the agent process itself and asserts WhatsApp
-issues a live pairing code.
+`test-relay-binary.mjs` drives the shipped agent against real WhatsApp and
+asserts a live pairing code is issued, then that the UI stays honest until the
+code is typed on the phone. `test-agent.mjs` is the browser end-to-end: login,
+consent, code in the page, no shell command anywhere. `test-agent-resume.mjs`
+erases the agent's directory and proves the link comes back from the app alone —
+the property that lets the agent run on a host with no disk.
 
-**Current status: 181 checks passing, 0 failing.**
+`test-relay.mjs` covers the relay *HTTP* path, which must run against a server
+with **no** agent attached; it refuses to run otherwise (an agent claims approved
+replies on its own poll loop, which is correct behaviour and would make the
+relay-side assertions unreachable).
+
+**Current status (local, 2026-11-12): 168 checks passing, 0 failing** — relay 46
+(+2 agent-only skips), agent end-to-end 9, agent loop 19, resume 16, parser 21,
+lockdown 8, binary 4, semantic 10, UI 28, auth-pages 17. `test-relay.mjs` and
+`test-agent-resume.mjs` need a server; `test-agent.mjs` and
+`test-relay-binary.mjs` also need an agent process.
 
 ---
 
