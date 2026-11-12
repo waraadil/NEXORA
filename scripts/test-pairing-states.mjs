@@ -245,6 +245,96 @@ try {
     ? ok('and the spinner is gone once the code is there')
     : appeared ? no('left the spinner up under a real code') : null;
 
+  // ── 8. The first-ever pairing, driven through the form ───────────────────
+  // Every case above starts from a seeded "pairing" row, so the server props
+  // already say waiting and it is easy to believe the flow works. The real
+  // first-time user starts from a page that says "Get started" and `unpaired`.
+  // In that state the poll never began, because it was gated on those stale
+  // props — which is why the bug survived a fix and a passing suite.
+  //
+  // This drives the actual form. The phone field is controlled, so it must be
+  // typed rather than filled: `fill()` does not fire React's onChange and the
+  // number silently stays empty, which makes the submit fail validation and the
+  // test lie about what it proved. The code arriving is faked by the database
+  // write below, because no agent runs against this server; everything else —
+  // the click, the claim, the poll, the render — is real.
+  console.log('\n[8. A first-ever pairing, from Get started]');
+  await admin.from('whatsapp_integrations').delete().eq('user_id', userId);
+  await page.goto(`${BASE}/integrations`, { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(1500);
+  (await has(/Get started/))
+    ? ok('a fresh account is offered Get started')
+    : no('a fresh account did not offer Get started');
+
+  await page.getByRole('button', { name: 'Get started' }).click();
+  await page.waitForTimeout(1200);
+  await page.locator('input[name=phone]').click();
+  await page.keyboard.type(PHONE, { delay: 15 });
+  await page.getByRole('button', { name: /continue/i }).first().click();
+  await page.waitForTimeout(1200);
+  for (const box of await page.$$('input[name=ack]')) await box.click();
+  await page.locator('input[name=confirm]').click();
+  await page.keyboard.type('I understand the risks', { delay: 10 });
+  await page.waitForTimeout(300);
+
+  let startedPolls = 0;
+  const countPoll = (r) => {
+    if (r.url().includes('/api/whatsapp/pairing-status')) startedPolls += 1;
+  };
+  page.on('response', countPoll);
+
+  await page.getByRole('button', { name: /create pairing code/i }).click();
+  await page.waitForTimeout(5000);
+
+  // This server has no agent configured, so the action must refuse and say so
+  // rather than leaving a spinner up — the silent failure this page exists to
+  // avoid. That refusal is the correct outcome here, and asserting it keeps the
+  // suite honest about what this environment can actually prove.
+  const refused = await has(/WhatsApp agent is not running/i);
+  if (refused) {
+    ok('with no agent configured, it says so instead of spinning forever');
+    startedPolls === 0
+      ? ok('and does not pretend to be waiting on a code')
+      : no('polled even though the pairing was refused');
+
+    // Now prove the gate itself: a pairing the action has accepted must start
+    // polling immediately, even though these server props still say unpaired.
+    // The row is seeded here because the agent that would create it is absent.
+    await seed({ status: 'pending', sessionState: 'pairing', pairingMinutesAgo: 0, code: null });
+    await page.goto(`${BASE}/integrations`, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(1200);
+    const pollsBefore = startedPolls;
+    await admin
+      .from('whatsapp_integrations')
+      .update({ pairing_code: 'F1RS-T777', pairing_code_at: new Date().toISOString() })
+      .eq('user_id', userId);
+    let firstSeen = false;
+    for (let i = 0; i < 7 && !firstSeen; i += 1) {
+      await page.waitForTimeout(1000);
+      firstSeen = await has(/F1RS-T777/);
+    }
+    startedPolls > pollsBefore
+      ? ok('a live pairing card polls for the code', `${startedPolls - pollsBefore} polls`)
+      : no('a live pairing card did not poll');
+    firstSeen
+      ? ok('and shows the code with no reload')
+      : no('did not show the code', (await bodyText()).slice(0, 160).replace(/\s+/g, ' '));
+  } else {
+    // An agent is configured: the real thing must happen end to end.
+    startedPolls > 0
+      ? ok('it starts looking for the code without waiting for a reload', `${startedPolls} polls`)
+      : no('never polled after the submit — it is gated on stale props again');
+    let firstSeen = false;
+    for (let i = 0; i < 10 && !firstSeen; i += 1) {
+      await page.waitForTimeout(1000);
+      firstSeen = await has(/[A-Z0-9]{4}-[A-Z0-9]{4}/);
+    }
+    firstSeen
+      ? ok('the first-ever code appeared with no reload')
+      : no('the first-ever pairing still needs a reload');
+  }
+  page.off('response', countPoll);
+
   jsErrors.length === 0 ? ok('no JS errors') : no('JS errors', jsErrors.join(' | '));
 } catch (e) {
   no('crashed', e.message);

@@ -133,12 +133,31 @@ export function WhatsappPersonal({
   } | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
-  const status = polled?.status ?? relay.status;
-  const live = status === 'live';
+  // What the server said on this render, and nothing else. Polling must not
+  // overwrite it: it is what decides whether the card is a card at all, and a
+  // poll that returns "unpaired" for a moment would tear the whole thing down
+  // and throw away the phone number the user just typed.
+  const serverStatus = relay.status;
+  const status = polled?.status ?? serverStatus;
+  const live = serverStatus === 'live';
   // Only an OPEN pairing window is "waiting". A closed one is its own state — the
   // page used to treat both as waiting and trap the user on a dead spinner.
-  const expired = status === 'expired';
-  const waiting = (status === 'waiting' || status === 'connecting') && !expired;
+  const expired = serverStatus === 'expired' || status === 'expired';
+
+  // A pairing the user just started counts as waiting immediately.
+  //
+  // This is the gap that cost two rounds of fixes. On a first-ever pairing the
+  // page renders the "Get started" card, and the server props say `unpaired`.
+  // Submitting really does start the pairing and really does reach the agent —
+  // but `waiting` was derived from those stale props, so nothing ever polled,
+  // and the screen sat on the spinner until a reload re-rendered the page with
+  // fresh props. Every test written against a pre-seeded "pairing" row passed,
+  // because in those the props already said waiting.
+  //
+  // `state.step === 'ready'` is the action telling us the claim was accepted.
+  // That is the moment to start looking, whatever the props still say.
+  const justStarted = state?.step === 'ready';
+  const waiting = justStarted || ((status === 'waiting' || status === 'connecting') && !expired);
 
   // The pairing window is 15 minutes. Show a live countdown so "nothing is
   // happening" is never just a guess.
