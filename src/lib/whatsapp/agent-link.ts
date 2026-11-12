@@ -34,6 +34,22 @@ export async function startAgentLink(params: {
 }): Promise<StartLinkResult> {
   const admin = createSupabaseAdminClient();
 
+  const agentUrl = process.env.NEXORA_AGENT_URL?.trim();
+  const secret = process.env.NEXORA_AGENT_SECRET?.trim();
+
+  // No agent means nobody can turn a claim into a code. Writing the claim anyway
+  // left the page spinning "Generating your code…" forever, which is the exact
+  // silent failure this flow exists to remove. Say so, and change nothing.
+  if (!agentUrl || !secret) {
+    return {
+      claim: '',
+      expiresAt: new Date().toISOString(),
+      agentConfigured: false,
+      agentAdopted: false,
+      error: 'No WhatsApp agent is running for this deployment.',
+    };
+  }
+
   const { token, hash } = newClaimToken();
   const now = new Date().toISOString();
 
@@ -80,17 +96,12 @@ export async function startAgentLink(params: {
     })
     .eq('id', integration.id);
 
-  const agentUrl = process.env.NEXORA_AGENT_URL?.trim();
-  const secret = process.env.NEXORA_AGENT_SECRET?.trim();
-
   const base = {
     claim: token,
     expiresAt: new Date(Date.now() + CLAIM_TTL_MS).toISOString(),
-    agentConfigured: Boolean(agentUrl && secret),
+    agentConfigured: true,
     agentAdopted: false,
   };
-
-  if (!agentUrl || !secret) return base;
 
   try {
     const res = await fetch(`${agentUrl.replace(/\/+$/, '')}/adopt`, {
