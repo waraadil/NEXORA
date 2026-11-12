@@ -110,7 +110,24 @@ export default async function IntegrationsPage() {
   const emojiPreference: 'auto' | 'never' | 'match' =
     storedEmoji === 'never' || storedEmoji === 'match' ? storedEmoji : 'auto';
 
-  const view = { ...relay, status, relayKey, emojiPreference };
+  // Who the switch would actually speak to. Nearly always nobody, and the
+  // panel says so rather than leaving the user to guess.
+  const { data: allowed } = await supabase
+    .from('conversations')
+    .select('id, title')
+    .eq('user_id', user.id)
+    .eq('auto_reply_mode', 'on')
+    .eq('is_group', false)
+    .order('last_message_at', { ascending: false, nullsFirst: false })
+    .limit(20);
+
+  const view = {
+    ...relay,
+    status,
+    relayKey,
+    emojiPreference,
+    allowedContacts: (allowed ?? []).map((c) => ({ id: c.id as string, title: c.title as string | null })),
+  };
 
   return (
     <AppShell title="Integrations" subtitle="Connect WhatsApp to NEXORA">

@@ -44,6 +44,8 @@ export type RelayView = {
   instructions: string | null;
   /** 'auto' | 'never' | 'match' — the user's explicit emoji instruction. */
   emojiPreference: 'auto' | 'never' | 'match';
+  /** Conversations the user has explicitly allowed, for the switch's explainer. */
+  allowedContacts: { id: string; title: string | null }[];
   paused: boolean;
   pausedReason: string | null;
 };
@@ -702,7 +704,8 @@ function AutoReplyPanel({ relay }: { relay: RelayView }) {
             <span className="text-sm">
               <span className="font-medium text-foreground">Reply automatically</span>
               <span className="block text-muted-foreground">
-                One-to-one chats only. Groups are never auto-answered.
+                Switches the feature on. It still answers <span className="text-foreground">nobody</span>{' '}
+                until you allow each person in their conversation. Groups are never answered.
               </span>
             </span>
           </label>
@@ -765,6 +768,33 @@ function AutoReplyPanel({ relay }: { relay: RelayView }) {
               placeholder="Keep it short — anything you want the AI to know before it answers."
             />
           </Field>
+
+          {/* The switch alone is not enough information: someone turning this on
+              and walking away deserves to know whether it will speak to anyone. */}
+          <div className="rounded-lg border border-border bg-surface-2 p-3 text-sm">
+            {relay.allowedContacts.length === 0 ? (
+              <p className="text-muted-foreground">
+                <span className="font-medium text-foreground">Nobody is allowed yet.</span> Open a
+                conversation and press “Allow AI replies” to add one person.
+              </p>
+            ) : (
+              <>
+                <p className="font-medium text-foreground">
+                  Allowed ({relay.allowedContacts.length})
+                </p>
+                <ul className="mt-1 space-y-0.5 text-muted-foreground">
+                  {relay.allowedContacts.slice(0, 6).map((c) => (
+                    <li key={c.id} className="truncate">
+                      · {c.title ?? 'Untitled'}
+                    </li>
+                  ))}
+                  {relay.allowedContacts.length > 6 && (
+                    <li>· and {relay.allowedContacts.length - 6} more</li>
+                  )}
+                </ul>
+              </>
+            )}
+          </div>
 
           {relay.paused && relay.pausedReason && (
             <p className="rounded-lg border border-warning/30 bg-warning-subtle px-3 py-2 text-xs text-warning">
