@@ -53,7 +53,7 @@ in the flow — a test asserts exactly that.
 1. Open **https://dashboard.render.com/blueprints**
 2. Click **New Blueprint Instance**
 3. Choose the **NEXORA** repository (`waraadil/NEXORA`) and branch `main`
-4. Render reads `relay/render.yaml`: one web service, one 1 GB disk
+4. Render reads `render.yaml` at the repository root: one web service, one 1 GB disk
 5. Click **Apply** and wait for the first build (~2 minutes)
 
 ### 2. Copy two values from Render

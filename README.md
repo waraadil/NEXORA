@@ -95,8 +95,9 @@ number, acknowledge the risks, and press *Create pairing code*. The code appears
 on the page — you type it into WhatsApp. Nothing to install, nothing to run in a
 terminal, no shell command anywhere.
 
-Deployment is one blueprint: see [`relay/HOSTING.md`](relay/HOSTING.md) for the
-Render path (a card-free starter with a persistent disk) or a systemd unit for
+Deployment is one blueprint: [`render.yaml`](render.yaml) at the repository root
+creates the service and its persistent disk on Render. See
+[`relay/HOSTING.md`](relay/HOSTING.md) for the walk-through or a systemd unit for
 your own VPS. The app then needs two variables — `NEXORA_AGENT_URL` and
 `NEXORA_AGENT_SECRET`.
 

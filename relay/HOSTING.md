@@ -14,8 +14,9 @@ NEXORA → type the code NEXORA shows into WhatsApp → done.
 
 1. Push this repo (already pushed) and open
    **Render Dashboard → New → Blueprint**.
-2. Pick the `NEXORA` repo. Render reads `relay/render.yaml` and shows one web
-   service plus one 1 GB disk.
+2. Pick the `NEXORA` repo. Render reads `render.yaml` **at the repository root**
+   and shows one web service plus one 1 GB disk. (Render only discovers a
+   blueprint by that exact name at the root — not in a subdirectory.)
 3. Click **Apply** and wait for the first build (~2 minutes).
 4. Open the service → **Environment** and copy the generated
    `NEXORA_AGENT_SECRET` value.

@@ -1,13 +1,13 @@
 # NEXORA WhatsApp agent — Render blueprint
 #
-# One service, one disk. The agent holds your personal WhatsApp linked-device
-# session and polls NEXORA over outbound HTTPS, so it needs no public URL and no
-# firewall rule. NEXORA calls it once, when a pairing starts.
+# Render only discovers a Blueprint by a file named render.yaml at the ROOT of
+# the repository. This file lives here for that reason; the service itself runs
+# from relay/ via rootDir below.
 #
 #   Dashboard → New → Blueprint → pick this repo → Apply
 #
-# Then copy the service URL into Vercel as NEXORA_AGENT_URL and put the same
-# value in NEXORA_AGENT_SECRET on both sides. See relay/HOSTING.md.
+# Then copy the service URL into Vercel as NEXORA_AGENT_URL, and the generated
+# secret as NEXORA_AGENT_SECRET. See relay/HOSTING.md.
 
 services:
   - type: web
@@ -15,6 +15,8 @@ services:
     runtime: node
     plan: starter
     region: singapore
+    branch: main
+    # The agent's own code and package.json live here.
     rootDir: relay
     buildCommand: npm install --omit=dev
     startCommand: node agent.mjs
@@ -24,9 +26,8 @@ services:
       # Where the app lives. Change if you move off this domain.
       - key: NEXORA_URL
         value: https://nexora-zeta-red.vercel.app
-      # Shared secret. `generateValue: true` makes Render mint a strong one on
-      # first deploy; copy the generated value into Vercel as
-      # NEXORA_AGENT_SECRET so both sides agree.
+      # Shared secret. Render mints a strong one on first deploy; copy the same
+      # value into Vercel as NEXORA_AGENT_SECRET so both sides agree.
       - key: NEXORA_AGENT_SECRET
         generateValue: true
       # The WhatsApp session lives here and must survive restarts and deploys.
