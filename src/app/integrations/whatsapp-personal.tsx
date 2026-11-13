@@ -120,6 +120,10 @@ export function WhatsappPersonal({
   const [checkNote, setCheckNote] = useState<string | null>(null);
   const [reconnecting, startReconnecting] = useTransition();
   const [reconnectNote, setReconnectNote] = useState<string | null>(null);
+  // Whether the user asked to go back and change the number. The waiting card is
+  // otherwise a one-way door: the phone field lives on the form card behind it,
+  // so without this the only way to correct a typo was to reload the page.
+  const [startOver, setStartOver] = useState(false);
 
   // Server render on the first paint, polled value after that. The poll is the
   // only thing that can see a pairing advance while the tab stays open.
@@ -156,12 +160,37 @@ export function WhatsappPersonal({
   //
   // `state.step === 'ready'` is the action telling us the claim was accepted.
   // That is the moment to start looking, whatever the props still say.
-  const justStarted = state?.step === 'ready';
-  const waiting = justStarted || ((status === 'waiting' || status === 'connecting') && !expired);
+  const justStarted = state?.step === 'ready' && !startOver;
+  const waiting =
+    !startOver && (justStarted || ((status === 'waiting' || status === 'connecting') && !expired));
 
   // The pairing window is 15 minutes. Show a live countdown so "nothing is
   // happening" is never just a guess.
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
+  // What the card renders: the polled value wins whenever it exists, so a code
+  // that arrives after the page was painted still appears. The server-rendered
+  // value is what the first paint uses, and what a reload lands on.
+  const pairingCode = polled?.pairingCode ?? relay.pairingCode;
+
+  // Half a minute with no code at all means the normal path did not happen.
+  // Seconds, not minutes: a healthy pairing has a code in ten or so, and this
+  // only ever adds a way out — it never blocks anything.
+  const [slowStart, setSlowStart] = useState(false);
+  useEffect(() => {
+    if (!waiting || pairingCode) {
+      setSlowStart(false);
+      return;
+    }
+    const t = setTimeout(() => setSlowStart(true), 30_000);
+    return () => clearTimeout(t);
+  }, [waiting, pairingCode]);
+
+  // "Change number" on the waiting card has to land on the phone field, not on
+  // the "Get started" button the user already pressed once.
+  useEffect(() => {
+    if (startOver) setStage('details');
+  }, [startOver]);
+
   const pairingExpiresAt = polled?.pairingExpiresAt ?? relay.pairingExpiresAt;
   useEffect(() => {
     if (!pairingExpiresAt || live) {
@@ -189,7 +218,6 @@ export function WhatsappPersonal({
   // The polled value wins whenever it exists, so a code that arrives after the
   // page was painted still appears. The server-rendered value is what the first
   // paint uses, and what a reload lands on.
-  const pairingCode = polled?.pairingCode ?? relay.pairingCode;
 
   // The agent issues the code a moment or two after the claim is written, so
   // the card has to look for it. Without this the card sits on the spinner
@@ -388,11 +416,57 @@ export function WhatsappPersonal({
                   </p>
                 </div>
               ) : (
-                <div className="flex items-center gap-3">
-                  <span className="size-4 shrink-0 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
-                  <p className="text-sm text-foreground">
-                    Generating your code… this usually takes a few seconds.
-                  </p>
+                // The spinner is bounded on purpose. No code after half a
+                // minute is usually a dead attempt — an expired claim, a host
+                // that went to sleep, a socket that never came up — and an
+                // unbounded spinner is indistinguishable from a broken page.
+                // Say what is happening and offer the two real ways out.
+                <div className="space-y-3">
+                  <div className="flex items-center gap-3">
+                    <span className="size-4 shrink-0 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
+                    <p className="text-sm text-foreground">
+                      {slowStart
+                        ? 'Still waiting on WhatsApp. This is taking longer than it should.'
+                        : 'Generating your code… this usually takes a few seconds.'}
+                    </p>
+                  </div>
+                  {slowStart && (
+                    <div className="space-y-2">
+                      <p className="text-sm text-muted-foreground">
+                        Nothing is lost. Try again for a fresh code, or go back and check the number
+                        is right.
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          isLoading={reconnecting}
+                          onClick={() => {
+                            setReconnectNote(null);
+                            startReconnecting(async () => {
+                              const result = await reconnectPairing();
+                              if (result?.error) setReconnectNote(result.error);
+                            });
+                          }}
+                        >
+                          Try again
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setStartOver(true)}
+                        >
+                          Change number
+                        </Button>
+                      </div>
+                      {reconnectNote && (
+                        <p role="alert" className="text-sm text-destructive">
+                          {reconnectNote}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

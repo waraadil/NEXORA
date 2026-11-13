@@ -335,6 +335,43 @@ try {
   }
   page.off('response', countPoll);
 
+  // ── 9. A dead re-pairing on a previously-linked account ──────────────────
+  // Reported as "it's not giving me a pairing code, I think because the page
+  // wasn't updated from last time". The row still carried bridge_self_number
+  // from an older link, and describeRelay used that to decide the CURRENT
+  // attempt could not be expired. So the stored status said 'pairing', the stale
+  // code was correctly withheld, the expiry branch was skipped, and the card
+  // rendered a spinner over a window that had closed 22 minutes earlier.
+  //
+  // A previous link is not evidence that the pairing in front of the user is
+  // alive. With the account history present the card must still stand down.
+  console.log('\n[9. A dead attempt on an account that was linked before]');
+  await seed({
+    status: 'pending',
+    sessionState: 'pairing',
+    pairingMinutesAgo: 37,
+    code: 'DEAD-5555',
+    codeMinutesAgo: 28,
+    selfNumber: PHONE,
+  });
+  await page.goto(`${BASE}/integrations`, { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(2000);
+  !(await has(/Generating your code/i))
+    ? ok('does not spin over a window that has closed')
+    : no('still spinning on a dead attempt after a previous link');
+  (await has(/ran out of time/i))
+    ? ok('says the attempt ran out of time')
+    : no('does not admit the attempt is over');
+  !(await has(/DEAD-5555/))
+    ? ok('withholds the expired code')
+    : no('offered a code WhatsApp would reject');
+  (await has(/Get a new code/i))
+    ? ok('offers a fresh code')
+    : no('no way back to a working pairing');
+  (await has(/different number/i))
+    ? ok('offers a different number')
+    : no('no way to correct the number');
+
   jsErrors.length === 0 ? ok('no JS errors') : no('JS errors', jsErrors.join(' | '));
 } catch (e) {
   no('crashed', e.message);

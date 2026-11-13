@@ -347,10 +347,21 @@ export function describeRelay(row: Record<string, unknown> | null): RelayState {
   const storedStatus = (row.status as string) ?? null;
   const storedSession = (row.bridge_session_state as string | null) ?? null;
 
-  const status =
-    pairingStale && !row.bridge_self_number
-      ? ('expired' as const)
-      : storedToUiStatus(storedStatus, storedSession);
+  // An attempt that has any record of one — a click or a code — but whose clock
+  // has run out is over. It is not a settling pairing, because nothing is left
+  // to settle: the claim the agent would have adopted expired with everything
+  // else.
+  //
+  // `bridge_self_number` deliberately plays no part. It says this account was
+  // once linked, which is irrelevant to the attempt happening now, and gating on
+  // it meant a re-pairing whose window had closed fell through to the stored
+  // status — 'pairing' — so the card rendered a spinner, found no code because
+  // the stale one is withheld, and had no expiry branch to escape into. That is
+  // the permanent "generating your code" with nothing happening that was
+  // reported. A previous link is not evidence that the current one is alive.
+  const attemptStale = pairingStale && windowStart !== null;
+
+  const status = attemptStale ? ('expired' as const) : storedToUiStatus(storedStatus, storedSession);
 
   return {
     ...base,
