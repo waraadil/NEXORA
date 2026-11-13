@@ -14,7 +14,7 @@ import { isRelayLive } from '@/lib/whatsapp/relay';
  *
  * Two steps, deliberately:
  *   1. `beginPairing`  — after explicit consent, issues the relay key and opens
- *                        a 15-minute window for the phone number.
+ *                        a short pairing window for the phone number.
  *   2. `confirmPairing`— once the relay reports "connected", stores the account
  *                        identity and switches the link to live.
  *

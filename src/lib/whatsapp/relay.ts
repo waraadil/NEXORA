@@ -28,7 +28,9 @@ import { encryptSecret, decryptSecret } from '@/lib/crypto';
 export { CONSENT_VERSION, BRIDGE_RISKS, REQUIRED_ACKNOWLEDGEMENTS, CONFIRMATION_PHRASE } from './bridge-risks';
 import { CONSENT_VERSION } from './bridge-risks';
 
-export const PAIRING_TTL_MS = 15 * 60 * 1000; // a code is good for 15 minutes
+import { PAIRING_TTL_MS } from './bridge-risks';
+
+export { PAIRING_TTL_MS };
 
 /**
  * The columns `describeRelay` reads. Exported so the integrations page and the
@@ -273,7 +275,7 @@ export async function touchRelay(
 export type RelayState = {
   /**
    * UI vocabulary. 'live' means connected AND heartbeating recently.
-   * 'expired' means a pairing was started but its 15-minute window closed
+   * 'expired' means a pairing was started but its window closed
    * without a link — distinct from 'unpaired' so the page can say what happened
    * instead of silently showing the first-time form again.
    */
@@ -323,26 +325,24 @@ export function describeRelay(row: Record<string, unknown> | null): RelayState {
   const lastSeenAt = (row.bridge_last_seen_at as string | null) ?? null;
   const pairingAt = row.bridge_pairing_at ? new Date(row.bridge_pairing_at as string).getTime() : null;
 
-  // A pairing window is 15 minutes. Anything older is not "waiting" — it is a
-  // dead attempt, and rendering it as waiting is a trap: the card shows a
+  // A pairing window is PAIRING_TTL_MS. Anything older is not "waiting" — it is
+  // a dead attempt, and rendering it as waiting is a trap: the card shows a
   // spinner and an "expired" badge at the same time, the form that would start
   // a fresh pairing is never rendered, and there is no way out but a hidden
   // advanced block. Age it out and let the page offer a real restart.
-  // What the countdown actually measures.
   //
-  // The 15-minute window belongs to the CODE, not to the click that started it.
-  // The agent has to wake, open a socket and ask WhatsApp, which can take most
-  // of a minute, and it may retry up to three times. Starting the clock at
-  // `bridge_pairing_at` meant a user could be given a brand-new code with a
-  // countdown already reading a few seconds — and be told it expired while the
-  // code was still perfectly good. Use the moment the code reached us, falling
-  // back to the click only while no code has arrived yet.
+  // The window belongs to the CODE, not to the click that started it. The agent
+  // has to wake, open a socket and ask WhatsApp, which can take most of a
+  // minute. Starting the clock at `bridge_pairing_at` meant a user could be given
+  // a brand-new code with a countdown already reading a few seconds — and be
+  // told it expired while the code was still perfectly good. Use the moment the
+  // code reached us, falling back to the click only while no code has arrived.
   const codeAt = row.pairing_code_at ? new Date(row.pairing_code_at as string).getTime() : null;
   const windowStart = codeAt ?? pairingAt;
   const pairingStale = windowStart !== null && Date.now() - windowStart > PAIRING_TTL_MS;
 
-  // A code whose own 15 minutes are up is rejected by WhatsApp, so it must not
-  // be shown even if the claim window is somehow still open.
+  // A code older than the window is no longer worth showing: whatever WhatsApp
+  // would say about it, the user should not be typing a stale string.
   const codeStale = codeAt !== null && Date.now() - codeAt > PAIRING_TTL_MS;
   const storedStatus = (row.status as string) ?? null;
   const storedSession = (row.bridge_session_state as string | null) ?? null;

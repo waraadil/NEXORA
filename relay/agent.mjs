@@ -95,6 +95,9 @@ class Link {
     // is showing. A code is what the user is reading off the screen, so it is
     // the scarce resource here — not the socket connection. See start().
     this.codesIssued = 0;
+    // A fresh pair wipes the auth folder ONCE, before the first socket. Every
+    // later restart of the same attempt must keep it — see start().
+    this.wiped = false;
     this.contacts = new Map();
     this.groups = new Map();
     this.dir = join(ROOT, userId);
@@ -144,14 +147,29 @@ class Link {
     // So when this Link was created from an adopt (this.paired), start from a
     // clean folder. Restores still keep their session, which is what makes a
     // restart cheap.
-    if (this.paired) {
+    //
+    // Wipe ONCE, before the first socket of this attempt — never again.
+    //
+    // `paired` stays true for the whole life of the Link, so this branch used to
+    // run on every restart. Each run deleted the auth folder, and the socket API
+    // then generated a brand-new noise key. A pairing code is bound to the noise
+    // key that asked for it, so the phone would type a perfectly good code, the
+    // handshake would start and stall, WhatsApp would give up with "something
+    // went wrong", and retyping the same code failed because by then the key it
+    // belonged to no longer existed. That is the reported failure, twice.
+    //
+    // Reconnecting after a drop must reuse the keys an outstanding code was
+    // issued against — that is the entire point of reconnecting rather than
+    // starting over.
+    if (this.paired && !this.wiped) {
+      this.wiped = true;
       await wipeDir(this.dir);
       // …and drop the copy in NEXORA too, or restoreSession writes the very
       // credentials the wipe just removed straight back onto the disk and the
       // pairing asks for no code again. A pairing replaces the old link; it
       // does not resume it, so the old session must go from BOTH copies.
       await this.call('session', undefined, 'DELETE').catch(() => {});
-    } else {
+    } else if (!this.paired) {
       // Restore the session from NEXORA first, so a fresh host does not force a
       // re-pair. The app stores it encrypted; this is the only copy on disk.
       await this.restoreSession();
@@ -171,8 +189,15 @@ class Link {
       getMessage: async () => undefined,
     });
 
-    this.socket.ev.on('creds.update', async () => {
+    this.socket.ev.on('creds.update', async (update) => {
       await saveCreds();
+      // Registration state matters as much as the keys it sits next to. A
+      // pairing that completes between two 'notify' events, or just before a
+      // restart, must still be resumable — otherwise a fresh host re-registers
+      // and invalidates the code that is still on the user's screen.
+      if (update?.registered !== undefined) {
+        log(update.registered ? '· registration recorded' : '· registration cleared');
+      }
       this.persistSession().catch(() => {});
     });
 

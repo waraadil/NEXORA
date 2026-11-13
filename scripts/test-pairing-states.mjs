@@ -35,6 +35,16 @@ const admin = createClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_RO
 });
 
 const MINUTE = 60 * 1000;
+
+// Read the window from the app's own source rather than restating it. The
+// previous assertion hardcoded "15 minutes" and quietly became wrong the moment
+// that changed — a suite that agrees with a stale number is worse than no suite.
+const PAIRING_TTL_MINUTES = (() => {
+  const src = readFileSync(new URL('../src/lib/whatsapp/bridge-risks.ts', import.meta.url), 'utf8');
+  const m = src.match(/PAIRING_TTL_MS\s*=\s*(\d+)\s*\*\s*(\d+)\s*\*\s*(\d+)/);
+  if (!m) throw new Error('could not read PAIRING_TTL_MS from bridge-risks.ts');
+  return Number(m[1]) * Number(m[2]) * Number(m[3]) / 60_000;
+})();
 const email = `states-${Date.now()}@example.test`;
 const password = 'Test-password-123456';
 const PHONE = '919797000781'; // the number from the screenshot
@@ -143,9 +153,13 @@ try {
   (await has(/ran out of time|attempt has expired/i))
     ? no('declared a live code expired')
     : ok('does not declare a live code expired');
-  (await has(/1[0-5]:[0-5][0-9] left/))
-    ? ok('countdown reflects the code’s own 15 minutes')
-    : no('countdown does not track the code', (await bodyText()).match(/[0-9]+:[0-9]{2} left/)?.[0] ?? 'none');
+  // The window is a product decision and changes; the assertion must follow it
+  // rather than pin a number that will silently stop meaning anything.
+  const clock = (await bodyText()).match(/(\d+):(\d{2}) left/);
+  const leftSeconds = clock ? Number(clock[1]) * 60 + Number(clock[2]) : -1;
+  leftSeconds > 0 && leftSeconds <= PAIRING_TTL_MINUTES * 60
+    ? ok('countdown reflects the code’s own window', `${clock[0]}`)
+    : no('countdown does not track the code', clock?.[0] ?? 'none');
 
   // ── 4. A dead code must not be offered ───────────────────────────────────
   console.log('\n[4. An expired window that still has a stale code stored]');

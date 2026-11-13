@@ -7,7 +7,10 @@ import { Button } from '@/components/ui/button';
 import { Field, Input, Textarea } from '@/components/ui/field';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { BRIDGE_RISKS, CONFIRMATION_PHRASE } from '@/lib/whatsapp/bridge-risks';
+import { BRIDGE_RISKS, CONFIRMATION_PHRASE, PAIRING_TTL_MS } from '@/lib/whatsapp/bridge-risks';
+
+/** The window, in whole minutes, for the copy. One source of truth. */
+const PAIRING_MINUTES = Math.round(PAIRING_TTL_MS / 60_000);
 import {
   beginPairing,
   confirmPairing,
@@ -164,7 +167,7 @@ export function WhatsappPersonal({
   const waiting =
     !startOver && (justStarted || ((status === 'waiting' || status === 'connecting') && !expired));
 
-  // The pairing window is 15 minutes. Show a live countdown so "nothing is
+  // The pairing window is short on purpose. Show a live countdown so "nothing is
   // happening" is never just a guess.
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
   // What the card renders: the polled value wins whenever it exists, so a code
@@ -411,8 +414,8 @@ export function WhatsappPersonal({
                 <div className="space-y-1">
                   <p className="text-sm font-medium text-foreground">This attempt has expired.</p>
                   <p className="text-sm text-muted-foreground">
-                    WhatsApp codes are only good for 15 minutes, and no code was accepted in that
-                    time. Nothing is broken — start again below.
+                    This attempt has been open for {PAIRING_MINUTES} minutes, and no code was
+                    accepted in that time. Nothing is broken — start again below.
                   </p>
                 </div>
               ) : (
@@ -490,7 +493,7 @@ export function WhatsappPersonal({
                 start arriving as soon as the code is accepted.
               </p>
               {expired ? (
-                // The honest way out. This starts a brand-new 15-minute window on
+                // The honest way out. This starts a brand-new window on
                 // the same number, so the user never needs to find a hidden
                 // "start over" path — and never needs a terminal.
                 <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -571,7 +574,7 @@ export function WhatsappPersonal({
               <Badge tone="warning">expired</Badge>
             </div>
             <CardDescription>
-              A WhatsApp pairing code is only good for 15 minutes, and no code was accepted
+              This attempt was open for {PAIRING_MINUTES} minutes and no code was accepted
               {relay.pairingPhone ? ` for +${relay.pairingPhone}` : ''} before the window closed.
               Nothing is broken — nothing was linked, and your phone was never touched.
             </CardDescription>
@@ -579,8 +582,8 @@ export function WhatsappPersonal({
           <CardContent className="space-y-3">
             <Steps current={2} />
             <p className="text-sm text-muted-foreground">
-              Getting a new code opens a fresh 15-minute window for the same number. Type it into
-              WhatsApp straight away — the clock starts when the code appears.
+              Getting a new code opens a fresh {PAIRING_MINUTES}-minute window for the same number.
+              Type it into WhatsApp straight away — the clock starts when the code appears.
             </p>
             <div className="flex flex-wrap gap-2">
               <Button

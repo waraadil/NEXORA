@@ -1,3 +1,10 @@
+
+> **Working on this repo:** install the web app first (`npm install` at the
+> repository root) and the agent second (`cd relay && npm install
+> --install-links=false`). Running a plain `npm install` inside `relay/` while a
+> Vercel build (or a root `node_modules`) exists can prune the root dependencies,
+> and the next `next build` fails with "Could not find the Next.js package".
+
 # NEXORA WhatsApp agent — live personal WhatsApp
 
 Links **your own** WhatsApp number to NEXORA as a linked device, the same way
