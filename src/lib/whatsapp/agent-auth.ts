@@ -116,8 +116,28 @@ export async function upgradeClaimToAgent(ctx: AgentContext): Promise<string | n
 }
 
 /** Store the code WhatsApp issued, so the user reads it in the app. */
+/**
+ * Record the code the agent is showing.
+ *
+ * The agent re-sends its current code on every poll, which is right — it has no
+ * way to know which code the app already holds, and a missed push must not lose
+ * it. But stamping `pairing_code_at` again each time reset the 15-minute
+ * countdown every few seconds, so the card sat at "14:59 left" forever and the
+ * clock was meaningless.
+ *
+ * The timestamp means "when this code arrived", so it must only move when the
+ * code itself changes. Re-sending the same code is a no-op.
+ */
 export async function storePairingCode(userId: string, code: string): Promise<void> {
   const admin = createSupabaseAdminClient();
+  const { data } = await admin
+    .from('whatsapp_integrations')
+    .select('pairing_code')
+    .eq('user_id', userId)
+    .maybeSingle();
+
+  if ((data?.pairing_code as string | null) === code) return;
+
   await admin
     .from('whatsapp_integrations')
     .update({ pairing_code: code, pairing_code_at: new Date().toISOString() })

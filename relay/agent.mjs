@@ -91,6 +91,10 @@ class Link {
     // WhatsApp for a new code, and the old one on screen silently dies.
     this.everConnected = false;
     this.restarts = 0;
+    // How many pairing codes this Link has asked WhatsApp for, and the one it
+    // is showing. A code is what the user is reading off the screen, so it is
+    // the scarce resource here — not the socket connection. See start().
+    this.codesIssued = 0;
     this.contacts = new Map();
     this.groups = new Map();
     this.dir = join(ROOT, userId);
@@ -190,7 +194,11 @@ class Link {
         this.connected = true;
         this.everConnected = true;
         this.restarts = 0;
-        this.pairingCode = null;
+        // Only a *registered* session is a finished pairing. Before that,
+        // WhatsApp briefly reports "open" during registration and closes
+        // again; clearing the code here threw away the code the user was
+        // typing and made the card claim a code existed when none did.
+        if (state.creds.registered) this.pairingCode = null;
         const me = this.socket.user;
         this.me = {
           jid: me?.id ? jidNormalizedUser(me.id) : null,
@@ -232,6 +240,26 @@ class Link {
         // a fresh one deliberately.
         if (!this.everConnected) {
           this.restarts += 1;
+
+          // Once a code has been issued, reconnecting is the wrong move.
+          //
+          // WhatsApp closes the socket with 401 every time it waits for someone
+          // to type the code, so reconnecting is normal — but each reconnect
+          // ran start(), which asked for a NEW code. The person was reading a
+          // code off the screen and typing it while it was being replaced
+          // underneath them, which is exactly what WhatsApp reports as
+          // "Couldn't link device — get a new code". Symptom that led here: two
+          // codes on the user's phone, both rejected, seconds apart.
+          //
+          // Waiting instead is both correct and free: Baileys keeps the
+          // registration state in memory, and WhatsApp approves the code the
+          // moment it is entered. Reconnecting only matters before a code
+          // exists.
+          if (this.codesIssued > 0) {
+            log('… socket closed while the code is outstanding — holding it');
+            return;
+          }
+
           if (this.restarts > MAX_PAIR_ATTEMPTS) {
             log(`✗ pairing did not complete after ${MAX_PAIR_ATTEMPTS} attempts — stopping this link`);
             this.call('session', {
@@ -252,10 +280,11 @@ class Link {
       }
     });
 
-    if (!state.creds.registered && this.phone) {
+    if (!state.creds.registered && this.phone && this.codesIssued === 0) {
       await new Promise((r) => setTimeout(r, 1800));
       if (this.stopped || this.connected) return;
       try {
+        this.codesIssued += 1;
         const code = await this.socket.requestPairingCode(this.phone);
         this.pairingCode = formatCode(code);
         log(`pairing code for ${this.phone}: ${this.pairingCode}`);
