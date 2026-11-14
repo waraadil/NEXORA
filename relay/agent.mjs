@@ -63,7 +63,7 @@ const ENV_AGENT_TOKEN = (process.env.NEXORA_AGENT_TOKEN || '').trim();
  * never redeployed answers `{ok:true}` and looks perfectly healthy while
  * silently missing every fix — which is precisely the failure this avoids.
  */
-const AGENT_VERSION = '2026-11-14.2';
+const AGENT_VERSION = '2026-11-14.3';
 
 /**
  * How long to wait for WhatsApp's pair-device signal before asking anyway.
@@ -365,6 +365,21 @@ class Link {
         };
         if (!this.everConnected) {
           linkLog(this, `close ${code ?? '?'} (registered=${Boolean(state.creds.registered)}) ${this.lastClose.message ?? ''}`);
+        }
+
+        // 515 restartRequired is not a failure — it is what WhatsApp sends the
+        // moment a pairing is accepted, asking this device to reconnect now that
+        // it is registered. Counting it as a failed attempt could exhaust
+        // MAX_PAIR_ATTEMPTS at the exact moment the user succeeded, and tear down
+        // a link that had just been created. Worth naming: the difference between
+        // "tried three times and failed" and "worked, now reconnect" is invisible
+        // in a status code alone.
+        if (code === DisconnectReason.restartRequired) {
+          log('↻ pairing accepted — reconnecting as a linked device');
+          await new Promise((r) => setTimeout(r, 1200));
+          if (this.stopped) return;
+          this.start().catch((e) => log('restart after pairing failed:', e.message));
+          return;
         }
 
         if (code === DisconnectReason.loggedOut) {
