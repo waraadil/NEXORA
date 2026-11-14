@@ -3,7 +3,7 @@
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { createSupabaseServerClient, createSupabaseAdminClient } from '@/lib/supabase/server';
-import { revokeRelay, normalizePairingPhone } from '@/lib/whatsapp/relay';
+import { revokeRelay, normalizePairingPhone, pairingPhoneProblem } from '@/lib/whatsapp/relay';
 import { revokeAgent } from '@/lib/whatsapp/agent-auth';
 import { startAgentLink } from '@/lib/whatsapp/agent-link';
 import { REQUIRED_ACKNOWLEDGEMENTS, CONFIRMATION_PHRASE } from '@/lib/whatsapp/bridge-risks';
@@ -78,6 +78,17 @@ export async function beginPairing(
     return { error: `Type exactly: ${CONFIRMATION_PHRASE}` };
   }
 
+  // Reject before a code can be issued, and say which mistake it was.
+  //
+  // A number without its country code is the one that got through before: the
+  // agent asked WhatsApp for a code against it, WhatsApp issued one, the card
+  // showed it, and it could never link. Catching it here means the person is
+  // told what is wrong instead of being handed a code that is guaranteed to
+  // fail, which is the failure this whole page exists to stop.
+  const phoneProblem = pairingPhoneProblem(parsed.data.phone);
+  if (phoneProblem) {
+    return { fieldErrors: { phone: phoneProblem } };
+  }
   const phone = normalizePairingPhone(parsed.data.phone);
   if (!phone) {
     return {

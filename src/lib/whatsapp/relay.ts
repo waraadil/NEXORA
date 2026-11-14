@@ -63,13 +63,61 @@ export const PAIRING_COLUMNS = [
   'auto_reply_paused_reason',
 ].join(', ');
 
-/** Digits only, no plus. WhatsApp rejects anything else. */
+/**
+ * Digits only, no plus. WhatsApp rejects anything else.
+ *
+ * Length is the whole point here. E.164 numbers are at most 15 digits, and a
+ * country code is at least one digit, so a real international number is never
+ * shorter than about 7. But the failure that actually happened was not too
+ * short — it was a bare national number. Someone typed `9149400036`, their
+ * 10-digit Indian mobile with no `91` in front, and the app accepted it: the
+ * agent asked WhatsApp for a code against a number that is not a number any
+ * phone answers to, WhatsApp issued one anyway, and the code that appeared on
+ * screen could never link. The phone then reports "couldn't link device" and
+ * the person has no way to tell that the only mistake was the missing prefix.
+ *
+ * So the rule is: the number must plausibly begin with a country code. The
+ * country codes in use are 1-3 digits, which makes a number shorter than 11
+ * digits almost always a national number typed without its prefix. That is a
+ * judgement, not a proof, so the message says what to do rather than pretending
+ * to be certain.
+ */
 export function normalizePairingPhone(input: string): string | null {
   const digits = String(input ?? '').replace(/[^\d]/g, '');
   if (digits.length < 7 || digits.length > 15) return null;
   // A stray leading 0 (national format) produces a number WhatsApp can never
   // match. Strip exactly one so "+91 0987…" style typos still work.
-  return digits.replace(/^0+/, '') === digits ? digits : digits.replace(/^0+/, '');
+  const stripped = digits.replace(/^0+/, '');
+  return stripped;
+}
+
+/**
+ * Why `normalizePairingPhone` said no, in words the person can act on.
+ *
+ * Separate from the normaliser so the check has one home and the explanation
+ * has another: the form needs a sentence, the database needs digits.
+ *
+ * The mistake to catch is a bare national number — the reported one was
+ * `9149400036`, an Indian mobile typed without the `91`. It cannot be caught by
+ * length alone: Singapore's +65 and an 8-digit number is 10 digits, and so are
+ * Denmark and Norway, so any "shorter than N" rule rejects real numbers. What is
+ * true is that the length has to *fit* the country code, and that `91` is always
+ * followed by exactly ten digits.
+ */
+export function pairingPhoneProblem(input: string): string | null {
+  const digits = String(input ?? '').replace(/[^\d]/g, '');
+  if (!digits) return 'Enter your number with the country code.';
+  if (digits.length < 7) return 'That number is too short to be a full international number.';
+  if (digits.length > 15) return 'That number is too long. WhatsApp numbers are at most 15 digits.';
+
+  // India: `91` plus exactly ten digits. A ten-digit number starting `91` can
+  // only be two of those digits plus eight of the national number, so the
+  // country code is missing. This is the exact case that shipped broken.
+  if (digits.length === 10 && digits.startsWith('91')) {
+    return `That looks like an Indian number without its country code. Add 91 in front: ${`91${digits}`}`;
+  }
+
+  return null;
 }
 
 function hashKey(key: string) {
