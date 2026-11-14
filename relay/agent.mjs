@@ -30,6 +30,7 @@ import makeWASocket, {
   DisconnectReason,
   Browsers,
   fetchLatestBaileysVersion,
+  fetchLatestWaWebVersion,
   isJidGroup,
   isJidBroadcast,
   isJidStatusBroadcast,
@@ -62,7 +63,50 @@ const ENV_AGENT_TOKEN = (process.env.NEXORA_AGENT_TOKEN || '').trim();
  * never redeployed answers `{ok:true}` and looks perfectly healthy while
  * silently missing every fix — which is precisely the failure this avoids.
  */
-const AGENT_VERSION = '2026-11-13.1';
+const AGENT_VERSION = '2026-11-14.1';
+
+/**
+ * The WhatsApp Web build this agent claims to be.
+ *
+ * This is the whole ballgame for device linking. `fetchLatestBaileysVersion()`
+ * returns the version bundled with the library, and it goes stale the moment
+ * WhatsApp ships a new web build — it still answers `isLatest: true`, so nothing
+ * looks wrong. WhatsApp then refuses to register a companion that advertises an
+ * outdated client: the pairing code is never accepted and the phone reports
+ * "couldn't link device", while the socket quietly sits in the handshake until
+ * it times out about two minutes later. That is exactly the pair of symptoms
+ * users reported, and switching to `fetchLatestWaWebVersion()` is the fix
+ * upstream recommends (WhiskeySockets/Baileys#2679).
+ *
+ * Resolved once per process: it is a network call, and a stable value also means
+ * every link in this process advertises the same build.
+ */
+let waVersionPromise = null;
+async function resolveWaVersion() {
+  if (!waVersionPromise) {
+    waVersionPromise = (async () => {
+      try {
+        const live = await fetchLatestWaWebVersion();
+        if (live?.version?.length === 3) {
+          log('wa web version:', live.version.join('.'));
+          return live.version;
+        }
+      } catch (e) {
+        log('wa web version lookup failed:', e.message);
+      }
+      // Offline or the endpoints are down: the bundled version is the only
+      // option left. Worth trying — it links fine whenever it is not far behind.
+      try {
+        const bundled = await fetchLatestBaileysVersion();
+        log('wa web version (fallback):', bundled.version.join('.'));
+        return bundled.version;
+      } catch {
+        return undefined; // let Baileys use its own default
+      }
+    })();
+  }
+  return waVersionPromise;
+}
 
 const log = (...a) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...a);
 
@@ -195,13 +239,27 @@ class Link {
     }
 
     const { state, saveCreds } = await useMultiFileAuthState(this.dir);
-    const { version } = await fetchLatestBaileysVersion();
+    const version = await resolveWaVersion();
 
     this.socket = makeWASocket({
       version,
       auth: state,
       browser: Browsers.ubuntu('Chrome'),
       printQRInTerminal: false,
+      // Keep the pairing window open for as long as the code on screen lives.
+      //
+      // Measured, not guessed: with Baileys' default the socket is closed with
+      // 408 "QR refs attempts ended" after 161 seconds, because it rotates a QR
+      // every 60s and then every 20s and runs out of refs. The code dies with
+      // the socket. NEXORA shows a three-minute window, so anyone who read the
+      // code carefully before typing it was typing it at a device that had
+      // already hung up — which is the single most common way this flow failed.
+      //
+      // Four minutes puts the socket past the window with room to spare. It
+      // cannot be made indefinite: WhatsApp itself closes an unregistered
+      // companion at about 211 seconds (measured), so the window NEXORA
+      // advertises is deliberately shorter than the connection it rides on.
+      qrTimeout: 4 * 60 * 1000,
       markOnlineOnConnect: false,
       syncFullHistory: false,
       generateHighQualityLinkPreview: false,

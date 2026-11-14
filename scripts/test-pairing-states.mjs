@@ -64,6 +64,7 @@ async function seed({
   codeMinutesAgo = null, // defaults to the same age as the claim
   status = 'pending',
   selfNumber = null,
+  lastSeenMinutesAgo = null,
 }) {
   const when = new Date(Date.now() - pairingMinutesAgo * MINUTE).toISOString();
   const codeWhen = new Date(Date.now() - (codeMinutesAgo ?? pairingMinutesAgo) * MINUTE).toISOString();
@@ -81,6 +82,10 @@ async function seed({
       pairing_code: code,
       pairing_code_at: code ? codeWhen : null,
       bridge_self_number: selfNumber,
+      bridge_last_seen_at:
+        lastSeenMinutesAgo === null
+          ? null
+          : new Date(Date.now() - lastSeenMinutesAgo * MINUTE).toISOString(),
       updated_at: when,
     },
     { onConflict: 'user_id' },
@@ -359,6 +364,35 @@ try {
   //
   // A previous link is not evidence that the pairing in front of the user is
   // alive. With the account history present the card must still stand down.
+  // The worst of the reports, and the one that took five rounds: a code that
+  // looks fine, a countdown that keeps ticking, and no process behind either.
+  // WhatsApp then holds the phone on "logging in" for about two minutes before
+  // failing. The window is still open here — only the agent is missing — so the
+  // page has to stop presenting the code as usable.
+  console.log('\n[8b. The agent went quiet while a code was on screen]');
+  await seed({
+    status: 'pending',
+    sessionState: 'pairing',
+    pairingMinutesAgo: 1,
+    code: 'QUIT-7777',
+    codeMinutesAgo: 1,
+    lastSeenMinutesAgo: 5,
+  });
+  await page.goto(`${BASE}/integrations`, { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(2000);
+  !(await has(/QUIT-7777/))
+    ? ok('withholds a code whose agent has stopped reporting')
+    : no('kept showing a code with nothing behind it');
+  (await has(/pairing link went quiet/i))
+    ? ok('says the pairing link went quiet')
+    : no('did not explain the silence');
+  !(await has(/\d:\d\d left/))
+    ? ok('stops the countdown instead of counting down over a corpse')
+    : no('countdown still running with no agent');
+  (await has(/Get a new code/i))
+    ? ok('offers a fresh code from the quiet state')
+    : no('no way out of the quiet state');
+
   console.log('\n[9. A dead attempt on an account that was linked before]');
   await seed({
     status: 'pending',

@@ -40,6 +40,8 @@ export type RelayView = {
   relayKey: string | null;
   /** The code WhatsApp issued, shown in the app so nothing is typed in a terminal. */
   pairingCode: string | null;
+  /** The attempt ended because the agent stopped reporting, not because time ran out. */
+  agentGone: boolean;
   lastError: string | null;
   autoReplyEnabled: boolean;
   requireApproval: boolean;
@@ -134,6 +136,7 @@ export function WhatsappPersonal({
     status: string;
     pairingCode: string | null;
     pairingExpiresAt: string | null;
+    agentGone: boolean;
     lastError: string | null;
     selfNumber: string | null;
     selfName: string | null;
@@ -187,6 +190,19 @@ export function WhatsappPersonal({
     const t = setTimeout(() => setSlowStart(true), 30_000);
     return () => clearTimeout(t);
   }, [waiting, pairingCode]);
+
+  // The agent stopped reporting inside the window.
+  //
+  // The window is still open, but the process that would accept the code is not
+  // answering any more, so the code on screen cannot work — WhatsApp holds the
+  // phone on "logging in" for about two minutes and then fails. That is the
+  // reported failure, so say it plainly instead of letting the spinner run.
+  //
+  // `pairingExpiresAt` is the signal: the server only clears it while a pairing
+  // is open when the attempt is stale or the agent has gone quiet. A pairing
+  // that has not yet received its first code also has none, so this is gated on
+  // having waited past the slow-start mark.
+  const agentGone = (polled?.agentGone ?? relay.agentGone) && !live && !expired;
 
   // "Change number" on the waiting card has to land on the phone field, not on
   // the "Get started" button the user already pressed once.
@@ -408,14 +424,17 @@ export function WhatsappPersonal({
                     </Button>
                   </div>
                 </>
-              ) : expired ? (
+              ) : expired || agentGone ? (
                 // No code and the window is gone: say so. A spinner here is a
                 // lie that never resolves — the exact thing this page is for.
                 <div className="space-y-1">
-                  <p className="text-sm font-medium text-foreground">This attempt has expired.</p>
+                  <p className="text-sm font-medium text-foreground">
+                    {agentGone ? 'The pairing link went quiet.' : 'This attempt has expired.'}
+                  </p>
                   <p className="text-sm text-muted-foreground">
-                    This attempt has been open for {PAIRING_MINUTES} minutes, and no code was
-                    accepted in that time. Nothing is broken — start again below.
+                    {agentGone
+                      ? `The device that issues the code stopped responding, so this code would never link. This is not something you did — start again below and it will get a fresh one.`
+                      : `This attempt has been open for ${PAIRING_MINUTES} minutes, and no code was accepted in that time. Nothing is broken — start again below.`}
                   </p>
                 </div>
               ) : (
@@ -492,10 +511,13 @@ export function WhatsappPersonal({
                 This page updates by itself — you don’t need to refresh or press anything. Messages
                 start arriving as soon as the code is accepted.
               </p>
-              {expired ? (
+              {expired || agentGone ? (
                 // The honest way out. This starts a brand-new window on
                 // the same number, so the user never needs to find a hidden
                 // "start over" path — and never needs a terminal.
+                //
+                // A pairing whose agent went quiet needs exactly this too: it is
+                // over, and the only useful action left is a fresh attempt.
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <Button
                     type="button"
@@ -536,7 +558,7 @@ export function WhatsappPersonal({
                   {checkNote && <span className="text-xs">{checkNote}</span>}
                 </div>
               )}
-              {expired && reconnectNote && (
+              {(expired || agentGone) && reconnectNote && (
                 <p role="alert" className="mt-2 text-sm text-destructive">
                   {reconnectNote}
                 </p>

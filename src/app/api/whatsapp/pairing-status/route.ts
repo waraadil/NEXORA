@@ -59,6 +59,10 @@ export async function GET() {
       status: relay.status,
       pairingCode: relay.pairingCode,
       pairingExpiresAt: relay.pairingExpiresAt,
+      // Whether the attempt is over because the agent stopped reporting. The
+      // card cannot infer this — a pairing that has simply not produced a code
+      // yet looks identical from the browser.
+      agentGone: relay.agentGone,
       lastError: relay.lastError,
       selfNumber: relay.selfNumber,
       selfName: relay.selfName,

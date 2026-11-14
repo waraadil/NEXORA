@@ -288,6 +288,16 @@ export type RelayState = {
   pairingExpiresAt: string | null;
   /** Code WhatsApp issued, rendered in the app. Null until the agent reports it. */
   pairingCode: string | null;
+  /**
+   * An attempt was in flight and the agent stopped reporting before the window
+   * closed — so no code it issued can still work.
+   *
+   * Separate from `pairingCode: null`, which only says "no code yet". The page
+   * needs to tell "waiting for the first code" apart from "the thing that would
+   * accept the code is gone"; one is a spinner for a few seconds, the other is
+   * the failure users reported as "logging in, then an error".
+   */
+  agentGone: boolean;
   lastError: string | null;
   autoReplyEnabled: boolean;
   requireApproval: boolean;
@@ -304,6 +314,7 @@ export function describeRelay(row: Record<string, unknown> | null): RelayState {
   const base: RelayState = {
     status: 'unpaired',
     lastSeenAt: null,
+    agentGone: false,
     selfNumber: null,
     selfName: null,
     deviceName: null,
@@ -361,6 +372,25 @@ export function describeRelay(row: Record<string, unknown> | null): RelayState {
   // reported. A previous link is not evidence that the current one is alive.
   const attemptStale = pairingStale && windowStart !== null;
 
+  // A pairing whose agent has gone quiet inside the window is dead, not live.
+  //
+  // The window is three minutes; the agent checks in every few seconds. Silence
+  // for RELAY_OFFLINE_AFTER_MS therefore means the process that would accept the
+  // code is not there, and the code on screen cannot work — WhatsApp will hold
+  // the phone on "logging in" for about two minutes and then fail. This was
+  // exactly the report, so an absent agent has to end the pairing rather than
+  // let the countdown run to zero over a corpse. The user gets a message they
+  // can act on instead of a timer that lies.
+  //
+  // Only applies while a code/in-flight attempt exists: before the agent has
+  // reported for the first time, `lastSeenAt` is null by definition and that is
+  // normal for the first few seconds after pressing the button.
+  const agentGone =
+    attemptStale ||
+    (codeAt !== null &&
+      lastSeenAt !== null &&
+      Date.now() - new Date(lastSeenAt).getTime() >= RELAY_OFFLINE_AFTER_MS);
+
   const status = attemptStale ? ('expired' as const) : storedToUiStatus(storedStatus, storedSession);
 
   return {
@@ -372,10 +402,13 @@ export function describeRelay(row: Record<string, unknown> | null): RelayState {
     deviceName: (row.bridge_device_name as string | null) ?? null,
     pairingPhone: (row.bridge_pairing_phone as string | null) ?? null,
     pairingExpiresAt:
-      windowStart && !pairingStale ? new Date(windowStart + PAIRING_TTL_MS).toISOString() : null,
+      windowStart && !pairingStale && !agentGone
+        ? new Date(windowStart + PAIRING_TTL_MS).toISOString()
+        : null,
     // A dead code is worse than no code: WhatsApp rejects it and the user types
     // a stale string into their phone.
-    pairingCode: codeStale ? null : ((row.pairing_code as string | null) ?? null),
+    pairingCode: codeStale || agentGone ? null : ((row.pairing_code as string | null) ?? null),
+    agentGone,
     lastError: (row.last_error as string | null) ?? null,
     autoReplyEnabled: !!row.auto_reply_enabled,
     requireApproval: !!row.auto_reply_require_approval,
