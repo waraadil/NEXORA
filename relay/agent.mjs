@@ -66,6 +66,20 @@ const AGENT_VERSION = '2026-11-13.1';
 
 const log = (...a) => console.log(`[${new Date().toISOString().slice(11, 19)}]`, ...a);
 
+/**
+ * A per-link log ring.
+ *
+ * The agent runs on a host nobody can open a shell on, so "why did pairing fail"
+ * had to be answerable from /health or not at all. Each link keeps its own last
+ * few lines; everything else still goes to stdout.
+ */
+const linkLog = (link, ...a) => {
+  const line = a.map((v) => (typeof v === 'string' ? v : JSON.stringify(v))).join(' ');
+  link.tail.push(`[${new Date().toISOString().slice(11, 19)}] ${line}`);
+  if (link.tail.length > 20) link.tail.shift();
+  log(...a);
+};
+
 if (!BASE || !SECRET) {
   console.error('Set NEXORA_URL and NEXORA_AGENT_SECRET.');
   process.exit(1);
@@ -98,6 +112,11 @@ class Link {
     // A fresh pair wipes the auth folder ONCE, before the first socket. Every
     // later restart of the same attempt must keep it — see start().
     this.wiped = false;
+    // Diagnostics, surfaced in /health. A pairing failure is otherwise invisible
+    // from outside the host, and guessing at one has already cost three rounds.
+    this.registered = false;
+    this.lastClose = null;
+    this.tail = [];
     this.contacts = new Map();
     this.groups = new Map();
     this.dir = join(ROOT, userId);
@@ -218,7 +237,9 @@ class Link {
       if (connection === 'open') {
         this.connected = true;
         this.everConnected = true;
+        this.registered = Boolean(state.creds.registered);
         this.restarts = 0;
+        this.lastClose = null;
         // Only a *registered* session is a finished pairing. Before that,
         // WhatsApp briefly reports "open" during registration and closes
         // again; clearing the code here threw away the code the user was
@@ -237,6 +258,19 @@ class Link {
       if (connection === 'close') {
         this.connected = false;
         const code = lastDisconnect?.error?.output?.statusCode;
+        // The single most useful fact when a pairing fails, and normally
+        // invisible: 401 before registration means nobody entered the code,
+        // 401 after means it was entered and refused, 4xx with a message means
+        // WhatsApp rejected this device outright.
+        this.lastClose = {
+          code: code ?? null,
+          registered: Boolean(state.creds.registered),
+          message: String(lastDisconnect?.error?.message ?? '').slice(0, 160) || null,
+          at: new Date().toISOString(),
+        };
+        if (!this.everConnected) {
+          linkLog(this, `close ${code ?? '?'} (registered=${Boolean(state.creds.registered)}) ${this.lastClose.message ?? ''}`);
+        }
 
         if (code === DisconnectReason.loggedOut) {
           log('✗ device removed from WhatsApp — clearing session');
@@ -266,25 +300,23 @@ class Link {
         if (!this.everConnected) {
           this.restarts += 1;
 
-          // Once a code has been issued, reconnecting is the wrong move.
+          // Once a code exists, KEEP THE SOCKET UP — but never mint another one.
           //
-          // WhatsApp closes the socket with 401 every time it waits for someone
-          // to type the code, so reconnecting is normal — but each reconnect
-          // ran start(), which asked for a NEW code. The person was reading a
-          // code off the screen and typing it while it was being replaced
-          // underneath them, which is exactly what WhatsApp reports as
-          // "Couldn't link device — get a new code". Symptom that led here: two
-          // codes on the user's phone, both rejected, seconds apart.
+          // Two separate mistakes lived here.
           //
-          // Waiting instead is both correct and free: Baileys keeps the
-          // registration state in memory, and WhatsApp approves the code the
-          // moment it is entered. Reconnecting only matters before a code
-          // exists.
-          if (this.codesIssued > 0) {
-            log('… socket closed while the code is outstanding — holding it');
-            return;
-          }
-
+          // Reconnecting is mandatory: WhatsApp expects this device to be
+          // listening when the code is entered, and closes the connection while
+          // it waits. A version of this file simply returned here, holding the
+          // socket shut, and the consequence was unmistakable — the phone sat on
+          // "logging in" for about two minutes and then failed, while a stranger
+          // pairing with a stale code got an instant "couldn't link device".
+          // One waits for a device that is there; the other is refused at once.
+          //
+          // Minting is what must stop. Each start() used to ask for a fresh code,
+          // replacing the one on screen mid-type. The wipe is now once per
+          // attempt and the code request is once per attempt, so reconnecting
+          // here resumes the SAME registration on the SAME keys — which is
+          // exactly what an entered code needs.
           if (this.restarts > MAX_PAIR_ATTEMPTS) {
             log(`✗ pairing did not complete after ${MAX_PAIR_ATTEMPTS} attempts — stopping this link`);
             this.call('session', {
@@ -674,6 +706,16 @@ const server = createServer(async (req, res) => {
         userId: l.userId,
         connected: l.connected,
         pairingCode: l.pairingCode,
+        // Everything needed to tell "nobody entered the code" from "the code was
+        // rejected" without shell access to the host. A pairing that fails has
+        // exactly one interesting fact — why the socket closed — and it is
+        // otherwise invisible.
+        stopped: l.stopped,
+        codesIssued: l.codesIssued,
+        restarts: l.restarts,
+        registered: l.registered,
+        lastClose: l.lastClose,
+        log: l.tail.slice(-14),
       })),
     };
     return json(200, health);
