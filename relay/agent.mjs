@@ -63,7 +63,16 @@ const ENV_AGENT_TOKEN = (process.env.NEXORA_AGENT_TOKEN || '').trim();
  * never redeployed answers `{ok:true}` and looks perfectly healthy while
  * silently missing every fix — which is precisely the failure this avoids.
  */
-const AGENT_VERSION = '2026-11-14.1';
+const AGENT_VERSION = '2026-11-14.2';
+
+/**
+ * How long to wait for WhatsApp's pair-device signal before asking anyway.
+ *
+ * The request is made on the signal; this only stops a silent WhatsApp from
+ * leaving the pairing with no code and no explanation. Measured handshake on a
+ * cold host is well under ten seconds.
+ */
+const CODE_REQUEST_DEADLINE_MS = 20_000;
 
 /**
  * The WhatsApp Web build this agent claims to be.
@@ -117,6 +126,21 @@ const log = (...a) => console.log(`[${new Date().toISOString().slice(11, 19)}]`,
  * had to be answerable from /health or not at all. Each link keeps its own last
  * few lines; everything else still goes to stdout.
  */
+/**
+ * A promise that someone will resolve later.
+ *
+ * Used to stop guessing: the pairing code must be requested at the moment
+ * WhatsApp says this device may pair, which is a one-shot event, not after a
+ * sleep of whatever length seemed safe.
+ */
+function makeSignal() {
+  let resolve;
+  const promise = new Promise((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
 const linkLog = (link, ...a) => {
   const line = a.map((v) => (typeof v === 'string' ? v : JSON.stringify(v))).join(' ');
   link.tail.push(`[${new Date().toISOString().slice(11, 19)}] ${line}`);
@@ -160,6 +184,9 @@ class Link {
     // from outside the host, and guessing at one has already cost three rounds.
     this.registered = false;
     this.lastClose = null;
+    // Resolved by the first pair-device signal. See the connection handler.
+    this.socketReady = makeSignal();
+    this.codeRequested = false;
     this.tail = [];
     this.contacts = new Map();
     this.groups = new Map();
@@ -290,7 +317,17 @@ class Link {
     });
 
     this.socket.ev.on('connection.update', async (u) => {
-      const { connection, lastDisconnect } = u;
+      const { connection, lastDisconnect, qr } = u;
+
+      // Baileys signals "this socket is ready for pairing" by emitting a pair
+      // device payload on the `qr` field — it arrives after WhatsApp answers the
+      // companion hello, which is the only moment a code request is certain to
+      // be registered server-side. Asking on a timer instead means the request
+      // can land before that answer, and a code that WhatsApp never recorded is
+      // a code the phone rejects.
+      if (qr && !this.codeRequested) {
+        this.socketReady.resolve();
+      }
 
       if (connection === 'open') {
         this.connected = true;
@@ -396,8 +433,24 @@ class Link {
     });
 
     if (!state.creds.registered && this.phone && this.codesIssued === 0) {
-      await new Promise((r) => setTimeout(r, 1800));
+      // Wait for WhatsApp's own "ready to pair" signal, with a ceiling.
+      //
+      // The old 1.8s sleep was a guess at how long the handshake takes. Usually
+      // it is enough and nothing looked wrong; on a cold host it is not, and the
+      // code request then raced the handshake. The failure that produces is
+      // invisible from the browser and looks identical to every other pairing
+      // failure on the phone.
+      //
+      // Twice now a timer has been wrong here — first too long in the sense that
+      // it re-issued codes, now too short to be reliable. So wait on the event,
+      // and fall back to the clock only so this can never hang.
+      await Promise.race([
+        this.socketReady.promise,
+        new Promise((r) => setTimeout(r, CODE_REQUEST_DEADLINE_MS)),
+      ]);
       if (this.stopped || this.connected) return;
+      if (this.codeRequested) return;
+      this.codeRequested = true;
       try {
         this.codesIssued += 1;
         const code = await this.socket.requestPairingCode(this.phone);
